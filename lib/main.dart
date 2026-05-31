@@ -33,6 +33,8 @@ class _MyHomePageState extends State<MyHomePage> {
   List<MySerialDevice> available_devices = [];
   List<Widget> device_list = [];
 
+  String hint = "Click the button to search for devices";
+
   List<Widget> _render_devices(List<MySerialDevice> devices) {
     return devices.map((device) {
       return ListTile(
@@ -68,13 +70,11 @@ class _MyHomePageState extends State<MyHomePage> {
   void _start_scan() async {
     available_devices = await getAvailablePorts();
 
-    print("scanned");
-
     setState(() {
       device_list = _render_devices(available_devices);
     });
     
-    print("found ${device_list.length} devices");
+    hint = "found ${device_list.length} devices";
   }
 
   @override
@@ -87,7 +87,10 @@ class _MyHomePageState extends State<MyHomePage> {
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
-          children: device_list,
+          children: [
+            Text(hint),
+            ...device_list,
+          ],
         ),
       ),
       floatingActionButton: FloatingActionButton(
