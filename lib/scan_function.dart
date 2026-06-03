@@ -8,6 +8,17 @@ class MySerialDevice {
   final String devicePath;  // 系统的底层路径或 COM 号 (例如: COM3, /dev/ttyUSB0)
 
   MySerialDevice({required this.name, required this.devicePath});
+
+  // 【PR 修补 3】重写 == 和 hashCode，防止 Riverpod family 频繁重建状态导致断连
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MySerialDevice &&
+          runtimeType == other.runtimeType &&
+          devicePath == other.devicePath; // 以底层物理路径为唯一标识
+
+  @override
+  int get hashCode => devicePath.hashCode;
 }
 
 /// 扫描所有可用的 USB/串口 设备
@@ -21,7 +32,6 @@ Future<List<MySerialDevice>> getAvailablePorts() async {
     if (Platform.isAndroid) {
       List<UsbDevice> devices = await UsbSerial.listDevices();
       for (var device in devices) {
-        // 过滤一下，最好只显示有实际产品名称的设备
         String displayName = device.productName ?? 'Unknown USB Device';
         availableDevices.add(
           MySerialDevice(
@@ -32,24 +42,23 @@ Future<List<MySerialDevice>> getAvailablePorts() async {
       }
     } 
     // ------------------------------------------
-    // Windows & macOS 端：使用 flutter_libserialport 扫描可用串口
+    // Windows & macOS & Linux 端：使用 flutter_libserialport 扫描可用串口
     // ------------------------------------------
-    else if (Platform.isWindows || Platform.isMacOS) {
+    else if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
       final ports = SerialPort.availablePorts;
       for (var portAddress in ports) {
         final port = SerialPort(portAddress);
         
-        // 获取串口的描述信息（例如 "USB Serial Port"）
         String displayName = port.description ?? 'Unknown Serial Port';
         
         availableDevices.add(
           MySerialDevice(
             name: '$portAddress - $displayName', 
-            devicePath: portAddress, // 这里的 portAddress 就是 COM3 或 /dev/cu.usbserial
+            devicePath: portAddress, 
           ),
         );
         
-        port.dispose(); // 获取完信息后释放资源，防止内存泄漏
+        port.dispose(); 
       }
     }
   } catch (e) {
