@@ -173,32 +173,32 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
         throw Exception("Web 平台暂不支持原生串行硬件通信");
       }
 
-      if (defaultTargetPlatform == TargetPlatform.android) {
+      else if (defaultTargetPlatform == TargetPlatform.android) {
+        // 1. 查找设备
         List<UsbDevice> devices = await UsbSerial.listDevices();
         UsbDevice? targetDevice;
         for (var d in devices) {
-          if (d.deviceName == state.device.devicePath) {
-            targetDevice = d;
-            break;
-          }
+            if (d.deviceName == state.device.devicePath) {
+                targetDevice = d;
+                break;
+            }
         }
         if (targetDevice == null) throw Exception("未找到对应底层路径的安卓USB设备");
 
-        // 【Android 动态权限拉取】
-        bool? hasPerm = await targetDevice.hasPermission();
-        if (hasPerm != true) {
-          hasPerm = await targetDevice.requestPermission();
-          if (hasPerm != true) throw Exception("用户拒绝了USB设备授权");
-        }
+        // 2. 获取端口并请求权限 (create 方法会弹出授权对话框)
+        _androidPort = await targetDevice.create();
+        if (_androidPort == null) throw Exception("无法获取安卓USB端口");
 
-        _androidPort = await targetDevice.open();
-        if (_androidPort == null) throw Exception("无法打开安卓USB端口");
-        
-        await _androidPort!.setDtr(true);
-        await _androidPort!.setRts(true);
-        // 初始化应用默认波特率
+        // 3. 打开端口
+        bool openResult = await _androidPort!.open();
+        if (!openResult) throw Exception("无法打开安卓USB端口");
+
+        // 4. 配置端口参数
+        await _androidPort!.setDTR(true);
+        await _androidPort!.setRTS(true);
         _androidPort!.setPortParameters(state.config.baudRate, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
 
+        // 5. 监听数据流
         final stream = _androidPort!.inputStream;
         if (stream == null) throw Exception("无法拉取 Android USB 核心输入流");
 

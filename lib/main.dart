@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:usb_measurement/scan_function.dart';
+import 'package:usb_measurement/receive_data.dart';
+
 
 void main() {
   runApp(const MyApp());
@@ -12,12 +15,14 @@ class MyApp extends StatelessWidget {
   // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'USB measurement',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+    return ProviderScope(
+      child: MaterialApp(
+        title: 'USB measurement',
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        ),
+        home: const MyHomePage(),
       ),
-      home: const MyHomePage(),
     );
   }
 }
@@ -61,10 +66,13 @@ class _MyHomePageState extends State<MyHomePage> {
     }).toList();
   }
 
-  // 模拟点击后的处理逻辑
   void _handleDeviceSelection(MySerialDevice device) {
-    print("用户选择了设备: ${device.name}，路径: ${device.devicePath}");
-    // 这里跳转到数据监测页面，或者开始执行串口连接逻辑
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => SerialMonitorPage(device: device),
+      ),
+    );
   }
 
   void _start_scan() async {
