@@ -16,19 +16,26 @@ import 'package:flutter_libserialport/flutter_libserialport.dart';
 
 enum SerialStatus {
   connecting,    
-  configuring,   
-  receiving,     
-  completed,     
+  active,        
   disconnected,  
 }
 
 class ProtocolConfig {
   final int sps;           
   final int dataLength;    
+  
+  final int baudRate;      // 【新增】波特率支持
+  final int dataBits;      
+  final int stopBits;      
+  final int parity;        
 
   ProtocolConfig({
     this.sps = 30,
     this.dataLength = 1024,
+    this.baudRate = 115200,
+    this.dataBits = 8,
+    this.stopBits = 1,
+    this.parity = 0,
   });
 
   List<int> get controlBytes {
@@ -43,10 +50,18 @@ class ProtocolConfig {
   ProtocolConfig copyWith({
     int? sps,
     int? dataLength,
+    int? baudRate,
+    int? dataBits,
+    int? stopBits,
+    int? parity,
   }) {
     return ProtocolConfig(
       sps: sps ?? this.sps,
       dataLength: dataLength ?? this.dataLength,
+      baudRate: baudRate ?? this.baudRate,
+      dataBits: dataBits ?? this.dataBits,
+      stopBits: stopBits ?? this.stopBits,
+      parity: parity ?? this.parity,
     );
   }
 }
@@ -55,14 +70,14 @@ class SerialPageState {
   final SerialStatus status;
   final MySerialDevice device;
   final ProtocolConfig config;
-  final List<List<int>> receivedFrames; 
+  final List<int> currentDisplayData; 
   final String errorMessage;
 
   SerialPageState({
     required this.status,
     required this.device,
     required this.config,
-    this.receivedFrames = const [],
+    this.currentDisplayData = const [],
     this.errorMessage = "",
   });
 
@@ -70,14 +85,14 @@ class SerialPageState {
     SerialStatus? status,
     MySerialDevice? device,
     ProtocolConfig? config,
-    List<List<int>>? receivedFrames,
+    List<int>? currentDisplayData,
     String? errorMessage,
   }) {
     return SerialPageState(
       status: status ?? this.status,
       device: device ?? this.device,
       config: config ?? this.config,
-      receivedFrames: receivedFrames ?? this.receivedFrames,
+      currentDisplayData: currentDisplayData ?? this.currentDisplayData,
       errorMessage: errorMessage ?? this.errorMessage,
     );
   }
@@ -95,8 +110,6 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
   StreamSubscription? _desktopSub;
 
   bool _isConnecting = false;
-  bool _isCompleted = false; // 【PR 修补 1】新增：数据流同步防重入锁
-
   final Queue<int> _buffer = Queue<int>();
 
   @override
@@ -122,7 +135,6 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
     await _desktopSub?.cancel();
     _desktopSub = null;
     
-    // 【PR 修补 5】彻底拆分异常捕获，防备硬件级雪崩
     try {
       _desktopReader?.close();
     } catch (e) {
@@ -151,9 +163,14 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
     await _cleanup(); 
 
     try {
-      if (kIsWeb) throw Exception("Web 平台暂不支持原生串行硬件通信");
-
-      const int hardcodedBaudRate = 115200;
+      // 【修复】Web 端优雅断开提示
+      if (kIsWeb) {
+        state = state.copyWith(
+          status: SerialStatus.disconnected,
+          errorMessage: "Web 浏览器沙盒限制，暂不支持原生串行硬件通信，请使用客户端版本。",
+        );
+        return;
+      }
 
       if (defaultTargetPlatform == TargetPlatform.android) {
         List<UsbDevice> devices = await UsbSerial.listDevices();
@@ -174,13 +191,20 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
 
         await _androidPort!.setDTR(true);
         await _androidPort!.setRTS(true);
-        _androidPort!.setPortParameters(hardcodedBaudRate, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
+        
+        // 【修复】强制 await 参数配置，防止异步时序失控
+        await _androidPort!.setPortParameters(
+          state.config.baudRate, 
+          UsbPort.DATABITS_8, 
+          UsbPort.STOPBITS_1, 
+          UsbPort.PARITY_NONE
+        );
 
         final stream = _androidPort!.inputStream;
         if (stream == null) throw Exception("无法拉取 Android USB 核心输入流");
 
         _androidSub = stream.listen((data) => _handleIncomingData(data));
-        state = state.copyWith(status: SerialStatus.configuring);
+        state = state.copyWith(status: SerialStatus.active); 
 
       } else if (defaultTargetPlatform == TargetPlatform.windows || 
                  defaultTargetPlatform == TargetPlatform.macOS || 
@@ -193,9 +217,8 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
           throw Exception("打开串口失败: $lastErr");
         }
 
-        // 【PR 修补 2】将配置抽取成对象设置后再反向覆写回串口实例，强制生效
         final spConfig = _desktopPort!.config;
-        spConfig.baudRate = hardcodedBaudRate;
+        spConfig.baudRate = state.config.baudRate;
         spConfig.bits = 8;
         spConfig.stopBits = 1;
         spConfig.parity = SerialPortParity.none;
@@ -208,7 +231,7 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
           throw Exception("创建硬件流监听失败，端口可能被独占: $e");
         }
 
-        state = state.copyWith(status: SerialStatus.configuring);
+        state = state.copyWith(status: SerialStatus.active); 
       } else {
         throw Exception("当前操作系统平台无匹配的串口驱动链");
       }
@@ -222,72 +245,70 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
     }
   }
 
-  Future<void> startReceiving(ProtocolConfig config) async {
-    final cmd = Uint8List.fromList(config.controlBytes);
-
+  Future<void> sendCommand(ProtocolConfig config) async {
     try {
-      // 【PR 修补 8】先往底层硬灌数据，没有抛出异常后再进行视图和状态切换
       if (defaultTargetPlatform == TargetPlatform.android && _androidPort != null) {
-        await _androidPort!.write(cmd);
+        int androidParity = UsbPort.PARITY_NONE;
+        if (config.parity == 1) androidParity = UsbPort.PARITY_ODD;
+        if (config.parity == 2) androidParity = UsbPort.PARITY_EVEN;
+
+        // 【修复】加上 await
+        await _androidPort!.setPortParameters(
+          config.baudRate, 
+          config.dataBits, 
+          config.stopBits, 
+          androidParity,
+        );
       } else if (_desktopPort != null && _desktopPort!.isOpen) {
-        _desktopPort!.write(cmd);
+        final spConfig = _desktopPort!.config;
+        spConfig.baudRate = config.baudRate;
+        spConfig.bits = config.dataBits;
+        spConfig.stopBits = config.stopBits;
+        
+        int desktopParity = SerialPortParity.none;
+        if (config.parity == 1) desktopParity = SerialPortParity.odd;
+        if (config.parity == 2) desktopParity = SerialPortParity.even;
+        
+        spConfig.parity = desktopParity;
+        _desktopPort!.config = spConfig; 
       } else {
         throw Exception("通信通道未打开或已断开");
       }
 
-      // 下发成功，此时才重置环境
+      // 【修复】调换顺序：先清空缓冲并切状态，再往底层写命令，防止 MCU 秒回数据被意外清掉
       _buffer.clear();
-      _isCompleted = false; // 重置防重入锁
+      state = state.copyWith(config: config, currentDisplayData: []);
 
-      state = state.copyWith(
-        status: SerialStatus.receiving,
-        config: config,
-        receivedFrames: [],
-      );
+      final cmd = Uint8List.fromList(config.controlBytes);
+      if (defaultTargetPlatform == TargetPlatform.android && _androidPort != null) {
+        await _androidPort!.write(cmd); // 【修复】加上 await
+      } else if (_desktopPort != null && _desktopPort!.isOpen) {
+        _desktopPort!.write(cmd);
+      }
+
     } catch (e) {
       debugPrint("向MCU下发控制命令失败: $e");
       state = state.copyWith(
         status: SerialStatus.disconnected,
-        errorMessage: "控制命令下发失败: $e",
+        errorMessage: "控制命令下发或配置应用失败: $e",
       );
     }
   }
 
   void disconnectDevice() async {
     await _cleanup();
-    state = state.copyWith(status: SerialStatus.disconnected);
+    state = state.copyWith(status: SerialStatus.disconnected, errorMessage: "用户手动断开串口");
   }
 
-  // ==========================================
-  // 3. 核心定长截取算法
-  // ==========================================
-  
-  void _handleIncomingData(List<int> data) async {
-    // 【PR 修补 1】拦截在 await 挂起期间，底层 Stream 扔过来的“幽灵数据”
-    if (state.status != SerialStatus.receiving || _isCompleted) return;
+  void _handleIncomingData(List<int> data) {
+    if (state.status != SerialStatus.active) return;
+    final targetLength = state.config.dataLength;
+    if (_buffer.length >= targetLength) return;
 
     _buffer.addAll(data);
-    final targetLength = state.config.dataLength;
-
-    if (_buffer.length >= targetLength) {
-      // 第一时间同步关上闸门
-      _isCompleted = true;
-      _androidSub?.cancel(); 
-      _desktopSub?.cancel();
-
-      final frame = <int>[];
-      for (int i = 0; i < targetLength; i++) {
-        frame.add(_buffer.removeFirst());
-      }
-
-      // 放心大胆地去交出线程控制权，释放底层
-      await _cleanup();
-
-      state = state.copyWith(
-        status: SerialStatus.completed,
-        receivedFrames: [frame],
-      );
-    }
+    state = state.copyWith(
+      currentDisplayData: _buffer.toList(),
+    );
   }
 }
 
@@ -296,7 +317,7 @@ final serialPageProvider = NotifierProvider.family<SerialPageNotifier, SerialPag
 );
 
 // ==========================================
-// 4. 页面主体渲染及交互视图 (此处无需修改)
+// 3. 页面主体渲染及交互视图
 // ==========================================
 
 class SerialMonitorPage extends ConsumerWidget {
@@ -324,20 +345,11 @@ class SerialMonitorPage extends ConsumerWidget {
     switch (pageState.status) {
       case SerialStatus.connecting:
         return _ConnectingView(device: pageState.device);
-      case SerialStatus.configuring:
-        return _ConfiguringView(
-          initialConfig: pageState.config,
-          onConfirm: (config) => notifier.startReceiving(config),
-        );
-      case SerialStatus.receiving:
-        return _ReceivingView(
+      case SerialStatus.active:
+        return _ActiveInteractiveView(
           pageState: pageState,
-          onStop: () => notifier.disconnectDevice(),
-        );
-      case SerialStatus.completed:
-        return _CompletedView(
-          pageState: pageState,
-          onRetry: () => notifier.connectDevice(),
+          onSend: (config) => notifier.sendCommand(config),
+          onDisconnect: () => notifier.disconnectDevice(),
         );
       case SerialStatus.disconnected:
         return _DisconnectedView(
@@ -361,7 +373,7 @@ class _ConnectingView extends StatelessWidget {
         children: [
           const CircularProgressIndicator(),
           const SizedBox(height: 24),
-          const Text("正在配置底层并打开串口句柄...", style: TextStyle(fontSize: 15)),
+          const Text("正在获取权限并打开串口句柄...", style: TextStyle(fontSize: 15)),
           const SizedBox(height: 8),
           Text(device.devicePath, style: const TextStyle(color: Colors.grey, fontFamily: 'monospace')),
         ],
@@ -370,25 +382,62 @@ class _ConnectingView extends StatelessWidget {
   }
 }
 
-class _ConfiguringView extends StatefulWidget {
-  final ProtocolConfig initialConfig;
-  final ValueChanged<ProtocolConfig> onConfirm;
-  const _ConfiguringView({required this.initialConfig, required this.onConfirm});
+class _ActiveInteractiveView extends StatefulWidget {
+  final SerialPageState pageState;
+  final ValueChanged<ProtocolConfig> onSend;
+  final VoidCallback onDisconnect;
+
+  const _ActiveInteractiveView({
+    required this.pageState,
+    required this.onSend,
+    required this.onDisconnect,
+  });
 
   @override
-  State<_ConfiguringView> createState() => _ConfiguringViewState();
+  State<_ActiveInteractiveView> createState() => _ActiveInteractiveViewState();
 }
 
-class _ConfiguringViewState extends State<_ConfiguringView> {
+class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
   final _formKey = GlobalKey<FormState>();
+  
   late TextEditingController _spsController;
   late TextEditingController _lengthController;
+  
+  late int _baudRate;
+  late int _dataBits;
+  late int _stopBits;
+  late int _parity;
 
   @override
   void initState() {
     super.initState();
-    _spsController = TextEditingController(text: widget.initialConfig.sps.toString());
-    _lengthController = TextEditingController(text: widget.initialConfig.dataLength.toString());
+    _spsController = TextEditingController(text: widget.pageState.config.sps.toString());
+    _lengthController = TextEditingController(text: widget.pageState.config.dataLength.toString());
+    
+    _baudRate = widget.pageState.config.baudRate;
+    _dataBits = widget.pageState.config.dataBits;
+    _stopBits = widget.pageState.config.stopBits;
+    _parity = widget.pageState.config.parity;
+  }
+
+  // 【修复】处理外部重置导致的 UI 状态脱节
+  @override
+  void didUpdateWidget(covariant _ActiveInteractiveView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.pageState.config != oldWidget.pageState.config) {
+      if (_spsController.text != widget.pageState.config.sps.toString()) {
+        _spsController.text = widget.pageState.config.sps.toString();
+      }
+      if (_lengthController.text != widget.pageState.config.dataLength.toString()) {
+        _lengthController.text = widget.pageState.config.dataLength.toString();
+      }
+      setState(() {
+        _baudRate = widget.pageState.config.baudRate;
+        _dataBits = widget.pageState.config.dataBits;
+        _stopBits = widget.pageState.config.stopBits;
+        _parity = widget.pageState.config.parity;
+      });
+    }
   }
 
   @override
@@ -398,205 +447,237 @@ class _ConfiguringViewState extends State<_ConfiguringView> {
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Form(
-      key: _formKey,
-      child: Padding(
-        key: const ValueKey('configuring'),
-        padding: const EdgeInsets.all(20.0),
-        child: ListView(
-          children: [
-            Row(
-              children: const [
-                Icon(Icons.settings_input_component, color: Colors.deepPurple),
-                SizedBox(width: 8),
-                Text("下发控制字段配置 (Baud: 115200)", style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-              ],
-            ),
-            const Divider(height: 24),
+  // 【修复】大数据渲染截断防卡死
+  String _buildHexDisplay(List<int> rawData) {
+    if (rawData.isEmpty) return "等待应用配置并下发指令后唤醒流数据...";
+    
+    // 如果数据量小，直接全量渲染
+    if (rawData.length <= 1000) {
+      return "收齐数据 Hex 视图:\n${rawData.map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ')}";
+    }
 
-            TextFormField(
-              controller: _spsController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: "每秒采集数据量 (SPS / Second Byte)",
-                border: OutlineInputBorder(),
-                hintText: "例如: 30",
-              ),
-              validator: (val) {
-                if (val == null || val.trim().isEmpty) return "数据量不能为空";
-                final parsed = int.tryParse(val.trim());
-                if (parsed == null || parsed <= 0 || parsed > 255) return "请输入1-255之间的有效整数";
-                return null;
-              },
-            ),
-            const SizedBox(height: 16),
-            
-            TextFormField(
-              controller: _lengthController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: "传输数据长度 (Bytes / 16位大端序)",
-                border: OutlineInputBorder(),
-                hintText: "例如: 1024",
-              ),
-              validator: (val) {
-                if (val == null || val.trim().isEmpty) return "传输数据长度不能为空";
-                final parsed = int.tryParse(val.trim());
-                if (parsed == null || parsed <= 0 || parsed > 65535) return "请输入1-65535之间的字节长度";
-                return null;
-              },
-            ),
-            const SizedBox(height: 32),
-            
-            ElevatedButton.icon(
-              onPressed: () {
-                if (_formKey.currentState?.validate() ?? false) {
-                  final config = ProtocolConfig(
-                    sps: int.parse(_spsController.text.trim()),
-                    dataLength: int.parse(_lengthController.text.trim()),
-                  );
-                  widget.onConfirm(config);
-                }
-              },
-              icon: const Icon(Icons.send),
-              label: const Text("下发指令并注入接收监听"),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                backgroundColor: Colors.deepPurple,
-                foregroundColor: Colors.white,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+    // 数据量超大时，只渲染头尾各 400 字节，中间折叠
+    final head = rawData.take(400).map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ');
+    final tail = rawData.skip(rawData.length - 400).map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ');
+    
+    return "收齐数据 Hex 视图 (超大载荷自动折叠):\n$head\n\n... [省略展示中间的 ${rawData.length - 800} 字节] ...\n\n$tail";
   }
-}
-
-class _ReceivingView extends StatelessWidget {
-  final SerialPageState pageState;
-  final VoidCallback onStop;
-  const _ReceivingView({required this.pageState, required this.onStop});
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      key: const ValueKey('receiving'),
-      child: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.outbound, size: 56, color: Colors.amber),
-            const SizedBox(height: 16),
-            const Text("控制信号已成功送达 MCU", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.amber)),
-            const SizedBox(height: 8),
-            const Text("下位机正根据指令采集并回吐流数据...", style: TextStyle(color: Colors.grey)),
-            const SizedBox(height: 24),
-            Card(
-              elevation: 2,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+    final rawData = widget.pageState.currentDisplayData;
+    final targetLength = widget.pageState.config.dataLength;
+    final isCompleted = rawData.length >= targetLength;
+
+    return Padding(
+      key: const ValueKey('active_interactive'),
+      padding: const EdgeInsets.all(16.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 左侧：Configuration 表单区
+          Expanded(
+            flex: 1,
+            child: Form(
+              key: _formKey,
+              child: ListView(
+                padding: const EdgeInsets.only(right: 8.0),
+                children: [
+                  Row(
+                    children: const [
+                      Icon(Icons.settings_input_component, color: Colors.deepPurple),
+                      SizedBox(width: 8),
+                      Text("通信参数配置", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  const Divider(height: 24),
+                  
+                  TextFormField(
+                    controller: _spsController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: "每秒采集数据量 (SPS)",
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    ),
+                    validator: (val) {
+                      if (val == null || val.isEmpty) return "不能为空";
+                      final parsed = int.tryParse(val.trim());
+                      if (parsed == null || parsed <= 0 || parsed > 255) return "需1-255内整数";
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  TextFormField(
+                    controller: _lengthController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: "传输数据长度 (Bytes)",
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    ),
+                    validator: (val) {
+                      if (val == null || val.isEmpty) return "不能为空";
+                      final parsed = int.tryParse(val.trim());
+                      if (parsed == null || parsed <= 0 || parsed > 65535) return "越界";
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 24),
+                  const Text("物理层参数", style: TextStyle(color: Colors.grey, fontSize: 13)),
+                  const SizedBox(height: 12),
+
+                  DropdownButtonFormField<int>(
+                    value: _baudRate,
+                    decoration: const InputDecoration(
+                      labelText: "波特率", 
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    ),
+                    items: [9600, 19200, 38400, 57600, 115200, 256000, 921600]
+                        .map((e) => DropdownMenuItem(value: e, child: Text("$e bps")))
+                        .toList(),
+                    onChanged: (v) => setState(() => _baudRate = v!),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  Row(
+                    children: [
+                      Expanded(
+                        child: DropdownButtonFormField<int>(
+                          value: _dataBits,
+                          decoration: const InputDecoration(
+                            labelText: "数据位", 
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                          ),
+                          items: [5, 6, 7, 8].map((e) => DropdownMenuItem(value: e, child: Text("$e位"))).toList(),
+                          onChanged: (v) => setState(() => _dataBits = v!),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: DropdownButtonFormField<int>(
+                          value: _stopBits,
+                          decoration: const InputDecoration(
+                            labelText: "停止位", 
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                          ),
+                          items: [1, 2].map((e) => DropdownMenuItem(value: e, child: Text("$e位"))).toList(),
+                          onChanged: (v) => setState(() => _stopBits = v!),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: DropdownButtonFormField<int>(
+                          value: _parity,
+                          decoration: const InputDecoration(
+                            labelText: "校验", 
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                          ),
+                          items: const [
+                            DropdownMenuItem(value: 0, child: Text("N")),
+                            DropdownMenuItem(value: 1, child: Text("O")),
+                            DropdownMenuItem(value: 2, child: Text("E")),
+                          ],
+                          onChanged: (v) => setState(() => _parity = v!),
+                        ),
+                      ),
+                    ],
+                  ),
+                  
+                  const SizedBox(height: 32),
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      if (_formKey.currentState?.validate() ?? false) {
+                        final config = ProtocolConfig(
+                          sps: int.parse(_spsController.text.trim()),
+                          dataLength: int.parse(_lengthController.text.trim()),
+                          baudRate: _baudRate,
+                          dataBits: _dataBits,
+                          stopBits: _stopBits,
+                          parity: _parity,
+                        );
+                        widget.onSend(config);
+                      }
+                    },
+                    icon: const Icon(Icons.send),
+                    label: const Text("应用配置并发送指令"),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      backgroundColor: Colors.deepPurple,
+                      foregroundColor: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    onPressed: widget.onDisconnect,
+                    icon: const Icon(Icons.power_off),
+                    label: const Text("断开串口连接"),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      backgroundColor: Colors.red,
+                      foregroundColor: Colors.white,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+          const VerticalDivider(width: 32, thickness: 1),
+
+          // 右侧：实时输出显示区
+          Expanded(
+            flex: 1,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   children: [
-                    const Text(" 运行波特率: 115200 bps (固定)"),
-                    const SizedBox(height: 6),
-                    Text(" 下发配置SPS: ${pageState.config.sps} sps"),
-                    const SizedBox(height: 6),
-                    Text(" 期望总截取长度: ${pageState.config.dataLength} 字节"),
-                    const Divider(height: 20),
-                    const Text(" 提示：一旦本地物理流字节凑齐目标长度，将自动执行安全断开。", style: TextStyle(color: Colors.blueGrey, fontSize: 12)),
+                    Icon(
+                      isCompleted ? Icons.check_circle : Icons.sync,
+                      color: isCompleted ? Colors.green : Colors.amber,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      isCompleted 
+                          ? "单次数据已收齐 (${rawData.length} 字节)" 
+                          : "正在接收数据 (${rawData.length} / $targetLength 字节)",
+                      style: TextStyle(
+                        fontSize: 16, 
+                        fontWeight: FontWeight.bold,
+                        color: isCompleted ? Colors.green : Colors.amber.shade800
+                      ),
+                    ),
                   ],
                 ),
-              ),
-            ),
-            const SizedBox(height: 40),
-            ElevatedButton.icon(
-              onPressed: onStop,
-              icon: const Icon(Icons.stop_screen_share),
-              label: const Text("强行中止并解绑端口"),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-              ),
-            )
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CompletedView extends StatelessWidget {
-  final SerialPageState pageState;
-  final VoidCallback onRetry;
-  const _CompletedView({required this.pageState, required this.onRetry});
-
-  @override
-  Widget build(BuildContext context) {
-    final rawData = pageState.receivedFrames.isNotEmpty ? pageState.receivedFrames.first : <int>[];
-
-    return Center(
-      key: const ValueKey('completed'),
-      child: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.check_circle, size: 64, color: Colors.green),
-            const SizedBox(height: 16),
-            const Text("单次请求数据已完整收齐", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green)),
-            const SizedBox(height: 8),
-            const Text("底层硬件通道已按预期安全自动切断", style: TextStyle(color: Colors.grey)),
-            const SizedBox(height: 24),
-            Card(
-              elevation: 2,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(" 成功截获有效载荷: ${rawData.length} 字节"),
-                    const Divider(height: 20),
-                    if (rawData.isNotEmpty)
-                      SizedBox(
-                        height: 180,
+                const Divider(height: 24),
+                Expanded(
+                  child: Card(
+                    elevation: 2,
+                    child: Padding(
+                      padding: const EdgeInsets.all(12.0),
+                      child: SizedBox(
+                        width: double.infinity,
+                        height: double.infinity,
                         child: SingleChildScrollView(
                           child: Text(
-                            "收齐数据 Hex 视图:\n${rawData.map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ')}",
+                            _buildHexDisplay(rawData),
                             style: const TextStyle(fontFamily: 'monospace', fontSize: 13, color: Colors.blueGrey),
                           ),
                         ),
-                      )
-                    else
-                      const Text("缓冲器为空", style: TextStyle(color: Colors.grey)),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 40),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: onRetry,
-                  icon: const Icon(Icons.sync),
-                  label: const Text("再次唤醒通道"),
-                ),
-                const SizedBox(width: 16),
-                OutlinedButton.icon(
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.arrow_back),
-                  label: const Text("退出监控"),
+                      ),
+                    ),
+                  ),
                 ),
               ],
-            )
-          ],
-        ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -618,13 +699,13 @@ class _DisconnectedView extends StatelessWidget {
           children: [
             const Icon(Icons.power_off, size: 64, color: Colors.red),
             const SizedBox(height: 16),
-            const Text("通信链路闭合中断", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const Text("通信链路状态反馈", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             if (errorMessage.isNotEmpty) ...[
               const SizedBox(height: 16),
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(8)),
-                child: Text("硬件底层抛出: $errorMessage", style: TextStyle(color: Colors.red.shade700, fontSize: 13)),
+                child: Text(errorMessage, style: TextStyle(color: Colors.red.shade700, fontSize: 13)),
               ),
             ],
             const SizedBox(height: 40),
@@ -634,7 +715,7 @@ class _DisconnectedView extends StatelessWidget {
                 ElevatedButton.icon(
                   onPressed: onRetry, 
                   icon: const Icon(Icons.sync),
-                  label: const Text("重新唤醒通道"),
+                  label: const Text("建立通道"),
                 ),
                 const SizedBox(width: 16),
                 OutlinedButton.icon(
