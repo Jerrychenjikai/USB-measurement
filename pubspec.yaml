@@ -33,6 +33,7 @@ dependencies:
   usb_serial: ^0.5.2
   flutter_libserialport: ^0.6.0
   flutter_riverpod: ^2.2.0
+  file_picker: ^8.0.0
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
