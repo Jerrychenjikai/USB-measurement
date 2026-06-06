@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart'; // 【修复-10】引入 file_picker
 
 import 'package:usb_measurement/scan_function.dart'; 
+import 'package:usb_measurement/template.dart';
 
 import 'package:usb_serial/usb_serial.dart';
 import 'package:flutter_libserialport/flutter_libserialport.dart';
@@ -452,10 +453,11 @@ class _ConnectingView extends StatelessWidget {
 
 class _ActiveInteractiveView extends StatefulWidget {
   final SerialPageState pageState;
-  final ValueChanged<ProtocolConfig> onSend;
+  final Function(ProtocolConfig) onSend;
   final VoidCallback onDisconnect;
 
   const _ActiveInteractiveView({
+    super.key,
     required this.pageState,
     required this.onSend,
     required this.onDisconnect,
@@ -469,51 +471,26 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
   final _formKey = GlobalKey<FormState>();
   
   late TextEditingController _spsController;
-  late TextEditingController _durationController; 
-  // 【修复-10】删除手写的导出路径 Controller
+  late TextEditingController _durationController;
   
-  late UsbDataType _dataType;
-  late int _channels;
-  
-  late int _baudRate;
-  late int _dataBits;
-  late int _stopBits;
-  late int _parity;
+  UsbDataType _dataType = UsbDataType.float32;
+  int _channels = 1;
+  int _baudRate = 115200;
+  int _dataBits = 8;
+  int _stopBits = 1;
+  int _parity = 0;
 
   @override
   void initState() {
     super.initState();
     _spsController = TextEditingController(text: widget.pageState.config.sps.toString());
     _durationController = TextEditingController(text: widget.pageState.config.duration.toString());
-    
     _dataType = widget.pageState.config.dataType;
     _channels = widget.pageState.config.channels;
-    
     _baudRate = widget.pageState.config.baudRate;
     _dataBits = widget.pageState.config.dataBits;
     _stopBits = widget.pageState.config.stopBits;
     _parity = widget.pageState.config.parity;
-  }
-
-  @override
-  void didUpdateWidget(covariant _ActiveInteractiveView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.pageState.config != oldWidget.pageState.config) {
-      if (_spsController.text != widget.pageState.config.sps.toString()) {
-        _spsController.text = widget.pageState.config.sps.toString();
-      }
-      if (_durationController.text != widget.pageState.config.duration.toString()) {
-        _durationController.text = widget.pageState.config.duration.toString();
-      }
-      setState(() {
-        _dataType = widget.pageState.config.dataType;
-        _channels = widget.pageState.config.channels;
-        _baudRate = widget.pageState.config.baudRate;
-        _dataBits = widget.pageState.config.dataBits;
-        _stopBits = widget.pageState.config.stopBits;
-        _parity = widget.pageState.config.parity;
-      });
-    }
   }
 
   @override
@@ -523,125 +500,128 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
     super.dispose();
   }
 
-  num _readValueFromByteData(ByteData bd, int offset, UsbDataType type) {
-    const endian = Endian.little;
-    switch(type) {
-      case UsbDataType.int8: return bd.getInt8(offset);
-      case UsbDataType.uint8: return bd.getUint8(offset);
-      case UsbDataType.int16: return bd.getInt16(offset, endian);
-      case UsbDataType.uint16: return bd.getUint16(offset, endian);
-      case UsbDataType.int32: return bd.getInt32(offset, endian);
-      case UsbDataType.uint32: return bd.getUint32(offset, endian);
-      case UsbDataType.float32: return bd.getFloat32(offset, endian);
-    }
-  }
-
-  String _formatValue(num val, UsbDataType type) {
-    // 【修复-3】拦截 NaN 和 Infinity 防止引发 FormatException
-    if (val is double && !val.isFinite) {
-      return val.toString(); 
-    }
-    return type == UsbDataType.float32 ? val.toStringAsFixed(4) : val.toString();
-  }
-
-  String _buildChannelDisplay(List<int> rawData, ProtocolConfig config) {
-    if (rawData.isEmpty) return "等待应用配置并下发指令后唤醒流数据...";
+  // 辅助方法：解析二进制数据并按通道输出文本驱动
+  String _buildChannelDisplay(Uint8List rawData, ProtocolConfig config) {
+    if (rawData.isEmpty) return "等待数据流入...";
+    final int wordSize = config.dataType.byteSize;
+    final int frameSize = wordSize * config.channels;
+    final int totalFrames = rawData.length ~/ frameSize;
     
-    int bytesPerSample = config.dataType.byteSize;
-    int frameSize = config.channels * bytesPerSample;
-    int numFrames = rawData.length ~/ frameSize;
-
-    if (numFrames == 0) return "正在接收，当前数据量不足一个完整帧(至少需 $frameSize 字节)...";
-
-    ByteData bd = ByteData.sublistView(Uint8List.fromList(rawData));
-    List<String> lines = [];
+    if (totalFrames == 0) return "接收数据不足单帧长度 (${rawData.length} Bytes)";
     
-    String header = List.generate(config.channels, (i) => "CH${i+1}".padRight(12)).join();
-    lines.add(header);
-    lines.add("-" * (config.channels * 12));
+    final ByteData byteData = ByteData.sublistView(rawData);
+    final StringBuffer sb = StringBuffer();
+    
+    // 打印表头
+    sb.write("Frame".padRight(8));
+    for (int c = 0; c < config.channels; c++) {
+      sb.write("CH${c + 1}".padRight(14));
+    }
+    sb.writeln();
+    sb.writeln("-" * (8 + 14 * config.channels));
 
-    String formatFrame(int frameIdx) {
-      int offset = frameIdx * frameSize;
-      List<String> vals = [];
-      for(int c=0; c<config.channels; c++) {
-        num val = _readValueFromByteData(bd, offset, config.dataType);
-        String strVal = _formatValue(val, config.dataType); // 调用安全转换方法
-        vals.add(strVal.padRight(12));
-        offset += bytesPerSample;
+    // 逆序打印最后 30 帧，防止 UI 渲染过大文本卡死
+    final int startFrame = (totalFrames > 30) ? totalFrames - 30 : 0;
+    
+    for (int f = startFrame; f < totalFrames; f++) {
+      sb.write("${f + 1}".padRight(8));
+      final int frameOffset = f * frameSize;
+      
+      for (int c = 0; c < config.channels; c++) {
+        final int byteOffset = frameOffset + (c * wordSize);
+        dynamic val = 0;
+        
+        switch (config.dataType) {
+          case UsbDataType.int8: val = byteData.getInt8(byteOffset); break;
+          case UsbDataType.uint8: val = byteData.getUint8(byteOffset); break;
+          case UsbDataType.int16: val = byteData.getInt16(byteOffset, Endian.little); break;
+          case UsbDataType.uint16: val = byteData.getUint16(byteOffset, Endian.little); break;
+          case UsbDataType.int32: val = byteData.getInt32(byteOffset, Endian.little); break;
+          case UsbDataType.uint32: val = byteData.getUint32(byteOffset, Endian.little); break;
+          case UsbDataType.float32: val = byteData.getFloat32(byteOffset, Endian.little); break;
+        }
+        
+        String valStr = (val is double) ? val.toStringAsFixed(4) : val.toString();
+        sb.write(valStr.padRight(14));
       }
-      return vals.join();
+      sb.writeln();
     }
-
-    if (numFrames <= 1000) {
-      for(int i = 0; i < numFrames; i++) lines.add(formatFrame(i));
-    } else {
-      for(int i = 0; i < 400; i++) lines.add(formatFrame(i));
-      lines.add("\n... [省略展示中间的 ${numFrames - 800} 帧数据] ...\n");
-      for(int i = numFrames - 400; i < numFrames; i++) lines.add(formatFrame(i));
+    
+    if (totalFrames > 30) {
+      sb.writeln("\n... 已省略前期 ${totalFrames - 30} 帧历史数据 (当前数据区仅滚动展示最新30条) ...");
     }
-
-    int remainingBytes = rawData.length % frameSize;
-    String footer = remainingBytes > 0 ? "\n\n(提示: 尾部残留未对齐字节数: $remainingBytes)" : "";
-
-    return lines.join('\n') + footer;
+    
+    return sb.toString();
   }
 
-  Future<void> _exportToCsv() async {
+  // 触发系统保存 CSV 文件
+  void _exportToCsv() async {
     final rawData = widget.pageState.currentDisplayData;
     final config = widget.pageState.config;
-    
-    int bytesPerSample = config.dataType.byteSize;
-    int frameSize = config.channels * bytesPerSample;
-    int numFrames = rawData.length ~/ frameSize;
+    final int wordSize = config.dataType.byteSize;
+    final int frameSize = wordSize * config.channels;
+    final int totalFrames = rawData.length ~/ frameSize;
 
-    if (numFrames == 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("没有足够的数据可供导出")));
-      return;
+    if (totalFrames == 0) return;
+
+    // 先将 List<int> 安全地转换为 Uint8List 视图，再交给 ByteData 解析
+    final ByteData byteData = ByteData.sublistView(Uint8List.fromList(rawData));
+    final StringBuffer csvContent = StringBuffer();
+    
+    // 写入 CSV 头部
+    List<String> headers = ["Frame Index"];
+    for (int c = 0; c < config.channels; c++) {
+      headers.add("Channel ${c + 1}");
+    }
+    csvContent.writeln(headers.join(","));
+
+    // 导出完整内存数据
+    for (int f = 0; f < totalFrames; f++) {
+      List<String> row = ["${f + 1}"];
+      final int frameOffset = f * frameSize;
+      
+      for (int c = 0; c < config.channels; c++) {
+        final int byteOffset = frameOffset + (c * wordSize);
+        dynamic val = 0;
+        switch (config.dataType) {
+          case UsbDataType.int8: val = byteData.getInt8(byteOffset); break;
+          case UsbDataType.uint8: val = byteData.getUint8(byteOffset); break;
+          case UsbDataType.int16: val = byteData.getInt16(byteOffset, Endian.little); break;
+          case UsbDataType.uint16: val = byteData.getUint16(byteOffset, Endian.little); break;
+          case UsbDataType.int32: val = byteData.getInt32(byteOffset, Endian.little); break;
+          case UsbDataType.uint32: val = byteData.getUint32(byteOffset, Endian.little); break;
+          case UsbDataType.float32: val = byteData.getFloat32(byteOffset, Endian.little); break;
+        }
+        row.add(val.toString());
+      }
+      csvContent.writeln(row.join(","));
     }
 
-    // 【修复-10】调用系统级 FilePicker 对话框
+    // 调用文件选择器保存
     String? outputFile = await FilePicker.platform.saveFile(
-      dialogTitle: '保存 CSV 数据表',
-      fileName: 'usb_data_export.csv',
-      type: FileType.custom,
-      allowedExtensions: ['csv'],
+      dialogTitle: '请选择 CSV 报告导出路径',
+      fileName: 'serial_monitor_export_${DateTime.now().millisecondsSinceEpoch}.csv',
+      type: Platform.isAndroid ? FileType.any : FileType.custom,
+      allowedExtensions: Platform.isAndroid ? null : ['csv'],
     );
 
-    if (outputFile == null) {
-      return; // 用户取消了保存
-    }
-
-    try {
-      File file = File(outputFile);
-      StringBuffer csvBuffer = StringBuffer();
-
-      csvBuffer.writeln(List.generate(config.channels, (i) => "CH${i+1}").join(','));
-
-      ByteData bd = ByteData.sublistView(Uint8List.fromList(rawData));
-      for(int i = 0; i < numFrames; i++) {
-        int offset = i * frameSize;
-        List<String> row = [];
-        for(int c = 0; c < config.channels; c++) {
-          num val = _readValueFromByteData(bd, offset, config.dataType);
-          row.add(_formatValue(val, config.dataType)); // 调用安全转换方法
-          offset += bytesPerSample;
+    if (outputFile != null) {
+      try {
+        final file = File(outputFile);
+        await file.writeAsString(csvContent.toString());
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text("导出成功！文件已保存至:\n$outputFile"),
+            backgroundColor: Colors.green,
+          ));
         }
-        csvBuffer.writeln(row.join(','));
-      }
-
-      await file.writeAsString(csvBuffer.toString());
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text("成功导出 $numFrames 条数据至 $outputFile"),
-          backgroundColor: Colors.green,
-        ));
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text("导出失败: $e"),
-          backgroundColor: Colors.red,
-        ));
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text("文件写入失败: $e"),
+            backgroundColor: Colors.redAccent,
+          ));
+        }
       }
     }
   }
@@ -656,321 +636,322 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
         ? 0.0 
         : (rawData.length / targetByteLength).clamp(0.0, 1.0);
 
-    return Padding(
-      key: const ValueKey('active_interactive'),
-      padding: const EdgeInsets.all(16.0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    // =========================================================
+    // 1. 将左侧/下侧的“配置参数表单”独立打包为 childA 
+    // =========================================================
+    final Widget formConfigSection = Form(
+      key: _formKey,
+      child: ListView(
+        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0), 
         children: [
-          // 左侧：Configuration 表单区
-          Expanded(
-            flex: 1,
-            child: Form(
-              key: _formKey,
-              child: ListView(
-                padding: const EdgeInsets.only(right: 8.0),
-                children: [
-                  Row(
-                    children: const [
-                      Icon(Icons.settings_input_component, color: Colors.deepPurple),
-                      SizedBox(width: 8),
-                      Text("通信参数配置", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                    ],
+          Row(
+            children: const [
+              Icon(Icons.settings_input_component, color: Colors.deepPurple),
+              SizedBox(width: 8),
+              Text("通信参数配置", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          const Divider(height: 24),
+          
+          TextFormField(
+            controller: _spsController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: "采样率 (SPS)",
+              border: OutlineInputBorder(),
+              contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            ),
+            validator: (val) {
+              if (val == null || val.isEmpty) return "不能为空";
+              final parsed = int.tryParse(val.trim());
+              if (parsed == null || parsed <= 0 || parsed > 255) return "需1-255内整数";
+              return null;
+            },
+          ),
+          const SizedBox(height: 16),
+          
+          TextFormField(
+            controller: _durationController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: "传输数据时间 (Seconds)",
+              border: OutlineInputBorder(),
+              contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            ),
+            validator: (val) {
+              if (val == null || val.isEmpty) return "不能为空";
+              final parsed = int.tryParse(val.trim());
+              if (parsed == null || parsed <= 0 || parsed > 65535) return "越界(最大65535)";
+              return null;
+            },
+          ),
+          const SizedBox(height: 16),
+          
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<UsbDataType>(
+                  value: _dataType,
+                  decoration: const InputDecoration(
+                    labelText: "数据类型", 
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                   ),
-                  const Divider(height: 24),
-                  
-                  TextFormField(
-                    controller: _spsController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: "采样率 (SPS)",
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                    ),
-                    validator: (val) {
-                      if (val == null || val.isEmpty) return "不能为空";
-                      final parsed = int.tryParse(val.trim());
-                      if (parsed == null || parsed <= 0 || parsed > 255) return "需1-255内整数";
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                  
-                  TextFormField(
-                    controller: _durationController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: "传输数据时间 (Seconds)",
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                    ),
-                    validator: (val) {
-                      if (val == null || val.isEmpty) return "不能为空";
-                      final parsed = int.tryParse(val.trim());
-                      if (parsed == null || parsed <= 0 || parsed > 65535) return "越界(最大65535)";
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                  
-                  Row(
-                    children: [
-                      Expanded(
-                        child: DropdownButtonFormField<UsbDataType>(
-                          value: _dataType,
-                          decoration: const InputDecoration(
-                            labelText: "数据类型", 
-                            border: OutlineInputBorder(),
-                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                          ),
-                          items: UsbDataType.values
-                              .map((e) => DropdownMenuItem(value: e, child: Text(e.label)))
-                              .toList(),
-                          onChanged: (v) => setState(() => _dataType = v!),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: DropdownButtonFormField<int>(
-                          value: _channels,
-                          decoration: const InputDecoration(
-                            labelText: "通道数", 
-                            border: OutlineInputBorder(),
-                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                          ),
-                          items: [1, 2, 3, 4, 8, 16] 
-                              .map((e) => DropdownMenuItem(value: e, child: Text("$e CH")))
-                              .toList(),
-                          onChanged: (v) => setState(() => _channels = v!),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  
-                  const Text("物理层参数", style: TextStyle(color: Colors.grey, fontSize: 13)),
-                  const SizedBox(height: 12),
-
-                  DropdownButtonFormField<int>(
-                    value: _baudRate,
-                    decoration: const InputDecoration(
-                      labelText: "波特率", 
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                    ),
-                    items: [9600, 19200, 38400, 57600, 115200, 256000, 921600]
-                        .map((e) => DropdownMenuItem(value: e, child: Text("$e bps")))
-                        .toList(),
-                    onChanged: (v) => setState(() => _baudRate = v!),
-                  ),
-                  const SizedBox(height: 16),
-                  
-                  Row(
-                    children: [
-                      Expanded(
-                        child: DropdownButtonFormField<int>(
-                          value: _dataBits,
-                          decoration: const InputDecoration(
-                            labelText: "数据位", 
-                            border: OutlineInputBorder(),
-                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                          ),
-                          items: [5, 6, 7, 8].map((e) => DropdownMenuItem(value: e, child: Text("$e位"))).toList(),
-                          onChanged: (v) => setState(() => _dataBits = v!),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: DropdownButtonFormField<int>(
-                          value: _stopBits,
-                          decoration: const InputDecoration(
-                            labelText: "停止位", 
-                            border: OutlineInputBorder(),
-                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                          ),
-                          items: [1, 2].map((e) => DropdownMenuItem(value: e, child: Text("$e位"))).toList(),
-                          onChanged: (v) => setState(() => _stopBits = v!),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: DropdownButtonFormField<int>(
-                          value: _parity,
-                          decoration: const InputDecoration(
-                            labelText: "校验", 
-                            border: OutlineInputBorder(),
-                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                          ),
-                          items: const [
-                            DropdownMenuItem(value: 0, child: Text("N")),
-                            DropdownMenuItem(value: 1, child: Text("O")),
-                            DropdownMenuItem(value: 2, child: Text("E")),
-                          ],
-                          onChanged: (v) => setState(() => _parity = v!),
-                        ),
-                      ),
-                    ],
-                  ),
-                  
-                  const SizedBox(height: 32),
-                  ElevatedButton.icon(
-                    onPressed: () {
-                      if (_formKey.currentState?.validate() ?? false) {
-                        // 【修复-7】发送前进行 OOM 保护拦截
-                        final parsedSps = int.parse(_spsController.text.trim());
-                        final parsedDur = int.parse(_durationController.text.trim());
-                        if (parsedSps * parsedDur * _channels > 1000000) {
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                            content: Text("警告：预估数据量超过一百万点，极易导致内存溢出闪退，请调小参数！"),
-                            backgroundColor: Colors.redAccent,
-                            duration: Duration(seconds: 4),
-                          ));
-                          return;
-                        }
-
-                        final config = ProtocolConfig(
-                          sps: parsedSps,
-                          duration: parsedDur,
-                          dataType: _dataType,
-                          channels: _channels,
-                          baudRate: _baudRate,
-                          dataBits: _dataBits,
-                          stopBits: _stopBits,
-                          parity: _parity,
-                        );
-                        widget.onSend(config);
-                      }
-                    },
-                    icon: const Icon(Icons.send),
-                    label: const Text("应用配置并发送指令"),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      backgroundColor: Colors.deepPurple,
-                      foregroundColor: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  ElevatedButton.icon(
-                    onPressed: widget.onDisconnect,
-                    icon: const Icon(Icons.power_off),
-                    label: const Text("断开串口连接"),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
-                    ),
-                  ),
-                  
-                  const SizedBox(height: 32),
-                  const Divider(),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: const [
-                      Icon(Icons.save_alt, color: Colors.teal),
-                      SizedBox(width: 8),
-                      Text("数据导出", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  // 【修复-10】替换掉之前硬编码路径的输入框
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: isCompleted ? _exportToCsv : null,
-                      icon: const Icon(Icons.download),
-                      label: Text(isCompleted ? "选择目录并导出 CSV" : "请等待数据接收完毕"),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                      ),
-                    ),
-                  ),
-                ],
+                  items: UsbDataType.values
+                      .map((e) => DropdownMenuItem(value: e, child: Text(e.label)))
+                      .toList(),
+                  onChanged: (v) => setState(() => _dataType = v!),
+                ),
               ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: DropdownButtonFormField<int>(
+                  value: _channels,
+                  decoration: const InputDecoration(
+                    labelText: "通道数", 
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  ),
+                  items: [1, 2, 3, 4, 8, 16] 
+                      .map((e) => DropdownMenuItem(value: e, child: Text("$e CH")))
+                      .toList(),
+                  onChanged: (v) => setState(() => _channels = v!),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          
+          const Text("物理层参数", style: TextStyle(color: Colors.grey, fontSize: 13)),
+          const SizedBox(height: 12),
+
+          DropdownButtonFormField<int>(
+            value: _baudRate,
+            decoration: const InputDecoration(
+              labelText: "波特率", 
+              border: OutlineInputBorder(),
+              contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            ),
+            items: [9600, 19200, 38400, 57600, 115200, 256000, 921600]
+                .map((e) => DropdownMenuItem(value: e, child: Text("$e bps")))
+                .toList(),
+            onChanged: (v) => setState(() => _baudRate = v!),
+          ),
+          const SizedBox(height: 16),
+          
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<int>(
+                  value: _dataBits,
+                  decoration: const InputDecoration(
+                    labelText: "数据位", 
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  ),
+                  items: [5, 6, 7, 8].map((e) => DropdownMenuItem(value: e, child: Text("$e位"))).toList(),
+                  onChanged: (v) => setState(() => _dataBits = v!),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: DropdownButtonFormField<int>(
+                  value: _stopBits,
+                  decoration: const InputDecoration(
+                    labelText: "停止位", 
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  ),
+                  items: [1, 2].map((e) => DropdownMenuItem(value: e, child: Text("$e位"))).toList(),
+                  onChanged: (v) => setState(() => _stopBits = v!),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: DropdownButtonFormField<int>(
+                  value: _parity,
+                  decoration: const InputDecoration(
+                    labelText: "校验", 
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 0, child: Text("N")),
+                    DropdownMenuItem(value: 1, child: Text("O")),
+                    DropdownMenuItem(value: 2, child: Text("E")),
+                  ],
+                  onChanged: (v) => setState(() => _parity = v!),
+                ),
+              ),
+            ],
+          ),
+          
+          const SizedBox(height: 32),
+          ElevatedButton.icon(
+            onPressed: () {
+              if (_formKey.currentState?.validate() ?? false) {
+                final parsedSps = int.parse(_spsController.text.trim());
+                final parsedDur = int.parse(_durationController.text.trim());
+                if (parsedSps * parsedDur * _channels > 1000000) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text("警告：预估数据量超过一百万点，极易导致内存溢出闪退，请调小参数！"),
+                    backgroundColor: Colors.redAccent,
+                    duration: Duration(seconds: 4),
+                  ));
+                  return;
+                }
+
+                final config = ProtocolConfig(
+                  sps: parsedSps,
+                  duration: parsedDur,
+                  dataType: _dataType,
+                  channels: _channels,
+                  baudRate: _baudRate,
+                  dataBits: _dataBits,
+                  stopBits: _stopBits,
+                  parity: _parity,
+                );
+                widget.onSend(config);
+              }
+            },
+            icon: const Icon(Icons.send),
+            label: const Text("应用配置并发送指令"),
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              backgroundColor: Colors.deepPurple,
+              foregroundColor: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: widget.onDisconnect,
+            icon: const Icon(Icons.power_off),
+            label: const Text("断开串口连接"),
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
             ),
           ),
           
-          const VerticalDivider(width: 32, thickness: 1),
-
-          // 右侧：实时输出显示区
-          Expanded(
-            flex: 1,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      isCompleted ? Icons.check_circle : Icons.sync,
-                      color: isCompleted ? Colors.green : Colors.amber,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      isCompleted 
-                          ? "本次数据已收齐 (${rawData.length} Bytes / ${widget.pageState.config.duration} 秒)" 
-                          : "正在接收数据 (${rawData.length} / $targetByteLength Bytes)",
-                      style: TextStyle(
-                        fontSize: 16, 
-                        fontWeight: FontWeight.bold,
-                        color: isCompleted ? Colors.green : Colors.amber.shade800
-                      ),
-                    ),
-                  ],
-                ),
-                const Divider(height: 24),
-                Expanded(
-                  child: Card(
-                    elevation: 2,
-                    child: Padding(
-                      padding: const EdgeInsets.all(12.0),
-                      child: SizedBox(
-                        width: double.infinity,
-                        height: double.infinity,
-                        child: SingleChildScrollView(
-                          child: Text(
-                            _buildChannelDisplay(rawData, widget.pageState.config),
-                            style: const TextStyle(fontFamily: 'monospace', fontSize: 13, color: Colors.blueGrey),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Text(
-                      "接收进度:",
-                      style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey.shade700),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: LinearProgressIndicator(
-                          value: progress,
-                          minHeight: 10,
-                          backgroundColor: Colors.grey.shade300,
-                          color: isCompleted ? Colors.green : Colors.deepPurple,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    SizedBox(
-                      width: 48,
-                      child: Text(
-                        "${(progress * 100).toStringAsFixed(1)}%",
-                        textAlign: TextAlign.right,
-                        style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
+          const SizedBox(height: 32),
+          const Divider(),
+          const SizedBox(height: 8),
+          Row(
+            children: const [
+              Icon(Icons.save_alt, color: Colors.teal),
+              SizedBox(width: 8),
+              Text("数据导出", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: isCompleted ? _exportToCsv : null,
+              icon: const Icon(Icons.download),
+              label: Text(isCompleted ? "选择目录并导出 CSV" : "请等待数据接收完毕"),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
             ),
           ),
         ],
       ),
+    );
+
+    // =========================================================
+    // 2. 将右侧/上侧的“数据波形/终端文本流输出”打包为 childB
+    // =========================================================
+    final Widget dataDisplaySection = Padding(
+      padding: const EdgeInsets.only(left: 4.0, right: 16.0, top: 12.0, bottom: 12.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                isCompleted ? Icons.check_circle : Icons.sync,
+                color: isCompleted ? Colors.green : Colors.amber,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  isCompleted 
+                      ? "本次数据已收齐 (${rawData.length} Bytes / ${widget.pageState.config.duration} 秒)" 
+                      : "正在接收数据 (${rawData.length} / $targetByteLength Bytes)",
+                  style: TextStyle(
+                    fontSize: 14, 
+                    fontWeight: FontWeight.bold,
+                    color: isCompleted ? Colors.green : Colors.amber.shade800
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const Divider(height: 24),
+          Expanded(
+            child: Card(
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: SizedBox(
+                  width: double.infinity,
+                  height: double.infinity,
+                  child: SingleChildScrollView(
+                    child: Text(
+                      _buildChannelDisplay(Uint8List.fromList(rawData), widget.pageState.config),
+                      style: const TextStyle(fontFamily: 'monospace', fontSize: 13, color: Colors.blueGrey),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Text(
+                "接收进度:",
+                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey.shade700),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: LinearProgressIndicator(
+                    value: progress,
+                    minHeight: 10,
+                    backgroundColor: Colors.grey.shade300,
+                    color: isCompleted ? Colors.green : Colors.deepPurple,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              SizedBox(
+                width: 48,
+                child: Text(
+                  "${(progress * 100).toStringAsFixed(1)}%",
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    // =========================================================
+    // 3. 核心集成：通过 ScreenSplitter 组合两段布局
+    // =========================================================
+    return ScreenSplitter(
+      defaultSplit: 0.7,   // 👈 右半边占屏幕 0.7（左半边自动占 0.3）
+      maxSplit: 0.9,       // 👈 右半边最大可以被拉伸撑满到 0.9
+      childA: formConfigSection,  // 传给左侧/下侧
+      childB: dataDisplaySection, // 传给右侧/上侧
     );
   }
 }
