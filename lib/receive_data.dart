@@ -1,389 +1,12 @@
-import 'dart:async';
-import 'dart:collection'; 
 import 'dart:typed_data'; 
 import 'dart:io'; 
-import 'package:flutter/foundation.dart'; 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:file_picker/file_picker.dart'; // 【修复-10】引入 file_picker
+import 'package:file_picker/file_picker.dart'; 
 
 import 'package:usb_measurement/scan_function.dart'; 
 import 'package:usb_measurement/template.dart';
-
-import 'package:usb_serial/usb_serial.dart';
-import 'package:flutter_libserialport/flutter_libserialport.dart';
-
-// ==========================================
-// 0. 数据类型定义
-// ==========================================
-enum UsbDataType { int8, uint8, int16, uint16, int32, uint32, float32 }
-
-extension UsbDataTypeExt on UsbDataType {
-  int get byteSize {
-    switch (this) {
-      case UsbDataType.int8:
-      case UsbDataType.uint8: return 1;
-      case UsbDataType.int16:
-      case UsbDataType.uint16: return 2;
-      case UsbDataType.int32:
-      case UsbDataType.uint32:
-      case UsbDataType.float32: return 4;
-    }
-  }
-
-  String get label {
-    return toString().split('.').last;
-  }
-}
-
-// ==========================================
-// 1. 状态机及协议配置的数据结构定义
-// ==========================================
-
-enum SerialStatus {
-  connecting,    
-  active,        
-  disconnected,  
-}
-
-class ProtocolConfig {
-  final int sps;           
-  final int duration;      
-  final UsbDataType dataType; 
-  final int channels;      
-  
-  final int baudRate;      
-  final int dataBits;      
-  final int stopBits;      
-  final int parity;        
-
-  ProtocolConfig({
-    this.sps = 30,
-    this.duration = 10,    
-    this.dataType = UsbDataType.int16, 
-    this.channels = 1,     
-    this.baudRate = 115200,
-    this.dataBits = 8,
-    this.stopBits = 1,
-    this.parity = 0,
-  });
-
-  int get targetByteLength => duration * sps * channels * dataType.byteSize;
-
-  List<int> get controlBytes {
-    return [
-      0x43,
-      sps & 0xFF,
-      (duration >> 8) & 0xFF, 
-      duration & 0xFF,
-    ];
-  }
-
-  ProtocolConfig copyWith({
-    int? sps,
-    int? duration,
-    UsbDataType? dataType,
-    int? channels,
-    int? baudRate,
-    int? dataBits,
-    int? stopBits,
-    int? parity,
-  }) {
-    return ProtocolConfig(
-      sps: sps ?? this.sps,
-      duration: duration ?? this.duration,
-      dataType: dataType ?? this.dataType,
-      channels: channels ?? this.channels,
-      baudRate: baudRate ?? this.baudRate,
-      dataBits: dataBits ?? this.dataBits,
-      stopBits: stopBits ?? this.stopBits,
-      parity: parity ?? this.parity,
-    );
-  }
-}
-
-class SerialPageState {
-  final SerialStatus status;
-  final MySerialDevice device;
-  final ProtocolConfig config;
-  final List<int> currentDisplayData; 
-  final String errorMessage;
-
-  SerialPageState({
-    required this.status,
-    required this.device,
-    required this.config,
-    this.currentDisplayData = const [],
-    this.errorMessage = "",
-  });
-
-  SerialPageState copyWith({
-    SerialStatus? status,
-    MySerialDevice? device,
-    ProtocolConfig? config,
-    List<int>? currentDisplayData,
-    String? errorMessage,
-  }) {
-    return SerialPageState(
-      status: status ?? this.status,
-      device: device ?? this.device,
-      config: config ?? this.config,
-      currentDisplayData: currentDisplayData ?? this.currentDisplayData,
-      errorMessage: errorMessage ?? this.errorMessage,
-    );
-  }
-}
-
-// ==========================================
-// 2. Riverpod 状态机控制器逻辑
-// ==========================================
-
-class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice> {
-  UsbPort? _androidPort;
-  StreamSubscription? _androidSub;
-  SerialPort? _desktopPort;
-  SerialPortReader? _desktopReader;
-  StreamSubscription? _desktopSub;
-
-  bool _isConnecting = false;
-  final Queue<int> _buffer = Queue<int>();
-
-  @override
-  SerialPageState build(MySerialDevice arg) {
-    ref.onDispose(() => _cleanup());
-    Future.microtask(() => connectDevice());
-
-    return SerialPageState(
-      status: SerialStatus.connecting,
-      device: arg,
-      config: ProtocolConfig(),
-    );
-  }
-
-  Future<void> _cleanup() async {
-    await _androidSub?.cancel();
-    _androidSub = null;
-    if (_androidPort != null) {
-      try { await _androidPort!.close(); } catch (_) {}
-      _androidPort = null;
-    }
-
-    await _desktopSub?.cancel();
-    _desktopSub = null;
-    
-    try {
-      _desktopReader?.close();
-    } catch (e) {
-      debugPrint("Reader close error: $e");
-    }
-    _desktopReader = null;
-
-    try {
-      if (_desktopPort != null) {
-        if (_desktopPort!.isOpen) _desktopPort!.close();
-        _desktopPort!.dispose();
-      }
-    } catch (e) {
-      debugPrint("Port close error: $e");
-    }
-    _desktopPort = null;
-
-    _buffer.clear();
-  }
-
-  // 【修复-1】统一处理流异常断开的逻辑
-  void _handleStreamDisconnect(String reason) {
-    if (state.status != SerialStatus.disconnected) {
-      state = state.copyWith(status: SerialStatus.disconnected, errorMessage: reason);
-      _cleanup();
-    }
-  }
-
-  Future<void> connectDevice() async {
-    if (_isConnecting) return;
-    _isConnecting = true;
-
-    state = state.copyWith(status: SerialStatus.connecting, errorMessage: "");
-    await _cleanup(); 
-
-    try {
-      if (kIsWeb) {
-        state = state.copyWith(
-          status: SerialStatus.disconnected,
-          errorMessage: "Web 浏览器沙盒限制，暂不支持原生串行硬件通信，请使用客户端版本。",
-        );
-        return;
-      }
-
-      if (defaultTargetPlatform == TargetPlatform.android) {
-        List<UsbDevice> devices = await UsbSerial.listDevices();
-        UsbDevice? targetDevice;
-        for (var d in devices) {
-            if (d.deviceName == state.device.devicePath) {
-                targetDevice = d;
-                break;
-            }
-        }
-        if (targetDevice == null) throw Exception("未找到对应底层路径的安卓USB设备");
-        
-        _androidPort = await targetDevice.create();
-        if (_androidPort == null) throw Exception("无法获取安卓USB端口");
-
-        bool openResult = await _androidPort!.open();
-        if (!openResult) throw Exception("无法打开安卓USB端口");
-
-        await _androidPort!.setDTR(true);
-        await _androidPort!.setRTS(true);
-        
-        // 【修复-5】连接初始化时，读取 state.config 里的用户参数，而不是硬编码
-        int androidParity = UsbPort.PARITY_NONE;
-        if (state.config.parity == 1) androidParity = UsbPort.PARITY_ODD;
-        if (state.config.parity == 2) androidParity = UsbPort.PARITY_EVEN;
-
-        await _androidPort!.setPortParameters(
-          state.config.baudRate, 
-          state.config.dataBits, 
-          state.config.stopBits, 
-          androidParity
-        );
-
-        final stream = _androidPort!.inputStream;
-        if (stream == null) throw Exception("无法拉取 Android USB 核心输入流");
-
-        // 【修复-1】加上 onError 和 onDone 监听物理断开
-        _androidSub = stream.listen(
-          (data) => _handleIncomingData(data),
-          onError: (err) => _handleStreamDisconnect("USB 流异常中断: $err"),
-          onDone: () => _handleStreamDisconnect("USB 物理设备已断开连接"),
-        );
-        state = state.copyWith(status: SerialStatus.active); 
-
-      } else if (defaultTargetPlatform == TargetPlatform.windows || 
-                 defaultTargetPlatform == TargetPlatform.macOS || 
-                 defaultTargetPlatform == TargetPlatform.linux) {
-        
-        _desktopPort = SerialPort(state.device.devicePath);
-        if (!_desktopPort!.openReadWrite()) {
-          final lastErr = SerialPort.lastError;
-          _desktopPort = null;
-          throw Exception("打开串口失败: $lastErr");
-        }
-
-        final spConfig = _desktopPort!.config;
-        // 【修复-5】桌面端也同步读取 config 里的设置
-        spConfig.baudRate = state.config.baudRate;
-        spConfig.bits = state.config.dataBits;
-        spConfig.stopBits = state.config.stopBits;
-        
-        int desktopParity = SerialPortParity.none;
-        if (state.config.parity == 1) desktopParity = SerialPortParity.odd;
-        if (state.config.parity == 2) desktopParity = SerialPortParity.even;
-        spConfig.parity = desktopParity;
-        
-        _desktopPort!.config = spConfig; 
-
-        try {
-          _desktopReader = SerialPortReader(_desktopPort!);
-          // 【修复-1】桌面端硬件断开监控
-          _desktopSub = _desktopReader!.stream.listen(
-            (data) => _handleIncomingData(data),
-            onError: (err) => _handleStreamDisconnect("串口流异常中断: $err"),
-            onDone: () => _handleStreamDisconnect("串口被意外关闭或移除"),
-          );
-        } catch (e) {
-          throw Exception("创建硬件流监听失败，端口可能被独占: $e");
-        }
-
-        state = state.copyWith(status: SerialStatus.active); 
-      } else {
-        throw Exception("当前操作系统平台无匹配的串口驱动链");
-      }
-    } catch (e) {
-      state = state.copyWith(
-        status: SerialStatus.disconnected,
-        errorMessage: e.toString(),
-      );
-    } finally {
-      _isConnecting = false;
-    }
-  }
-
-  Future<void> sendCommand(ProtocolConfig config) async {
-    try {
-      if (defaultTargetPlatform == TargetPlatform.android && _androidPort != null) {
-        int androidParity = UsbPort.PARITY_NONE;
-        if (config.parity == 1) androidParity = UsbPort.PARITY_ODD;
-        if (config.parity == 2) androidParity = UsbPort.PARITY_EVEN;
-
-        await _androidPort!.setPortParameters(
-          config.baudRate, 
-          config.dataBits, 
-          config.stopBits, 
-          androidParity,
-        );
-      } else if (_desktopPort != null && _desktopPort!.isOpen) {
-        final spConfig = _desktopPort!.config;
-        spConfig.baudRate = config.baudRate;
-        spConfig.bits = config.dataBits;
-        spConfig.stopBits = config.stopBits;
-        
-        int desktopParity = SerialPortParity.none;
-        if (config.parity == 1) desktopParity = SerialPortParity.odd;
-        if (config.parity == 2) desktopParity = SerialPortParity.even;
-        
-        spConfig.parity = desktopParity;
-        _desktopPort!.config = spConfig; 
-      } else {
-        throw Exception("通信通道未打开或已断开");
-      }
-
-      _buffer.clear();
-      state = state.copyWith(config: config, currentDisplayData: []);
-
-      final cmd = Uint8List.fromList(config.controlBytes);
-      if (defaultTargetPlatform == TargetPlatform.android && _androidPort != null) {
-        await _androidPort!.write(cmd); 
-      } else if (_desktopPort != null && _desktopPort!.isOpen) {
-        _desktopPort!.write(cmd);
-      }
-
-    } catch (e) {
-      debugPrint("向MCU下发控制命令失败: $e");
-      state = state.copyWith(
-        status: SerialStatus.disconnected,
-        errorMessage: "控制命令下发或配置应用失败: $e",
-      );
-    }
-  }
-
-  void disconnectDevice() async {
-    await _cleanup();
-    state = state.copyWith(status: SerialStatus.disconnected, errorMessage: "用户手动断开串口");
-  }
-
-  void _handleIncomingData(List<int> data) {
-    if (state.status != SerialStatus.active) return;
-    
-    final targetLength = state.config.targetByteLength;
-    if (_buffer.length >= targetLength) return;
-
-    // 【修复-6】防止末尾收到的数据超出 buffer 导致永远塞不进去
-    int remaining = targetLength - _buffer.length;
-    if (data.length > remaining) {
-      _buffer.addAll(data.take(remaining));
-    } else {
-      _buffer.addAll(data);
-    }
-    
-    state = state.copyWith(
-      currentDisplayData: _buffer.toList(),
-    );
-  }
-}
-
-final serialPageProvider = NotifierProvider.family<SerialPageNotifier, SerialPageState, MySerialDevice>(
-  SerialPageNotifier.new,
-);
+import 'package:usb_measurement/receive_data_func.dart'; // 引入已分离的状态机与逻辑
 
 // ==========================================
 // 3. 页面主体渲染及交互视图
@@ -401,7 +24,7 @@ class SerialMonitorPage extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: Text("监测: ${pageState.device.name} | v1.1.1 (Build 20260606)"),
+        title: Text("监测: ${pageState.device.name} | (Build 20260608)"),
       ),
       body: AnimatedSwitcher(
         duration: const Duration(milliseconds: 200),
@@ -436,15 +59,68 @@ class _ConnectingView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      key: const ValueKey('connecting'),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           const CircularProgressIndicator(),
           const SizedBox(height: 24),
-          const Text("正在获取权限并打开串口句柄...", style: TextStyle(fontSize: 15)),
+          Text(
+            "正在尝试与设备建立通信信道...",
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.grey.shade700),
+          ),
           const SizedBox(height: 8),
-          Text(device.devicePath, style: const TextStyle(color: Colors.grey, fontFamily: 'monospace')),
+          Text(
+            device.devicePath,
+            style: const TextStyle(fontFamily: 'monospace', color: Colors.grey),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// 补充：连接断开/失败视图
+class _DisconnectedView extends StatelessWidget {
+  final String errorMessage;
+  final VoidCallback onRetry;
+
+  const _DisconnectedView({required this.errorMessage, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(24.0),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.power_off, size: 64, color: Colors.red),
+          const SizedBox(height: 16),
+          const Text("通信链路状态反馈", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          if (errorMessage.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(8)),
+              child: Text(errorMessage, style: TextStyle(color: Colors.red.shade700, fontSize: 13)),
+            ),
+          ],
+          const SizedBox(height: 40),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              ElevatedButton.icon(
+                onPressed: onRetry, 
+                icon: const Icon(Icons.sync),
+                label: const Text("重新连接"),
+              ),
+              const SizedBox(width: 16),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const Icon(Icons.arrow_back),
+                label: const Text("返回主页"),
+              ),
+            ],
+          )
         ],
       ),
     );
@@ -500,9 +176,8 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
     super.dispose();
   }
 
-  // 辅助方法：解析二进制数据并按通道输出文本驱动
   String _buildChannelDisplay(Uint8List rawData, ProtocolConfig config) {
-    if (rawData.isEmpty) return "等待数据流入...";
+    if (rawData.isEmpty) return "等待数据流输入...";
     final int wordSize = config.dataType.byteSize;
     final int frameSize = wordSize * config.channels;
     final int totalFrames = rawData.length ~/ frameSize;
@@ -512,7 +187,6 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
     final ByteData byteData = ByteData.sublistView(rawData);
     final StringBuffer sb = StringBuffer();
     
-    // 打印表头
     sb.write("Frame".padRight(8));
     for (int c = 0; c < config.channels; c++) {
       sb.write("CH${c + 1}".padRight(14));
@@ -520,7 +194,6 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
     sb.writeln();
     sb.writeln("-" * (8 + 14 * config.channels));
 
-    // 逆序打印最后 30 帧，防止 UI 渲染过大文本卡死
     final int startFrame = (totalFrames > 30) ? totalFrames - 30 : 0;
     
     for (int f = startFrame; f < totalFrames; f++) {
@@ -548,13 +221,48 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
     }
     
     if (totalFrames > 30) {
-      sb.writeln("\n... 已省略前期 ${totalFrames - 30} 帧历史数据 (当前数据区仅滚动展示最新30条) ...");
+      sb.writeln("\n... 已省略前期 ${totalFrames - 30} 帧历史数据 (仅展示最新30条) ...");
     }
     
     return sb.toString();
   }
 
-  // 触发系统保存 CSV 文件
+  List<List<double>> _parseChartData(Uint8List rawData, ProtocolConfig config) {
+    if (rawData.isEmpty) return [];
+    final int wordSize = config.dataType.byteSize;
+    final int frameSize = wordSize * config.channels;
+    final int totalFrames = rawData.length ~/ frameSize;
+    if (totalFrames == 0) return [];
+
+    final ByteData byteData = ByteData.sublistView(rawData);
+    
+    int step = 1;
+    if (totalFrames > 300) {
+      step = totalFrames ~/ 300; 
+    }
+
+    List<List<double>> series = List.generate(config.channels, (_) => []);
+
+    for (int f = 0; f < totalFrames; f += step) {
+      final int frameOffset = f * frameSize;
+      for (int c = 0; c < config.channels; c++) {
+        final int byteOffset = frameOffset + (c * wordSize);
+        double val = 0.0;
+        switch (config.dataType) {
+          case UsbDataType.int8: val = byteData.getInt8(byteOffset).toDouble(); break;
+          case UsbDataType.uint8: val = byteData.getUint8(byteOffset).toDouble(); break;
+          case UsbDataType.int16: val = byteData.getInt16(byteOffset, Endian.little).toDouble(); break;
+          case UsbDataType.uint16: val = byteData.getUint16(byteOffset, Endian.little).toDouble(); break;
+          case UsbDataType.int32: val = byteData.getInt32(byteOffset, Endian.little).toDouble(); break;
+          case UsbDataType.uint32: val = byteData.getUint32(byteOffset, Endian.little).toDouble(); break;
+          case UsbDataType.float32: val = byteData.getFloat32(byteOffset, Endian.little); break;
+        }
+        series[c].add(val);
+      }
+    }
+    return series;
+  }
+
   void _exportToCsv() async {
     final rawData = widget.pageState.currentDisplayData;
     final config = widget.pageState.config;
@@ -564,18 +272,15 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
 
     if (totalFrames == 0) return;
 
-    // 先将 List<int> 安全地转换为 Uint8List 视图，再交给 ByteData 解析
     final ByteData byteData = ByteData.sublistView(Uint8List.fromList(rawData));
     final StringBuffer csvContent = StringBuffer();
     
-    // 写入 CSV 头部
     List<String> headers = ["Frame Index"];
     for (int c = 0; c < config.channels; c++) {
       headers.add("Channel ${c + 1}");
     }
     csvContent.writeln(headers.join(","));
 
-    // 导出完整内存数据
     for (int f = 0; f < totalFrames; f++) {
       List<String> row = ["${f + 1}"];
       final int frameOffset = f * frameSize;
@@ -597,7 +302,6 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
       csvContent.writeln(row.join(","));
     }
 
-    // 调用文件选择器保存
     String? outputFile = await FilePicker.platform.saveFile(
       dialogTitle: '请选择 CSV 报告导出路径',
       fileName: 'serial_monitor_export_${DateTime.now().millisecondsSinceEpoch}.csv',
@@ -636,9 +340,6 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
         ? 0.0 
         : (rawData.length / targetByteLength).clamp(0.0, 1.0);
 
-    // =========================================================
-    // 1. 将左侧/下侧的“配置参数表单”独立打包为 childA 
-    // =========================================================
     final Widget formConfigSection = Form(
       key: _formKey,
       child: ListView(
@@ -712,7 +413,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
                     border: OutlineInputBorder(),
                     contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                   ),
-                  items: [1, 2, 3, 4, 8, 16] 
+                  items: [1, 2, 3, 4, 5, 6, 7, 8] 
                       .map((e) => DropdownMenuItem(value: e, child: Text("$e CH")))
                       .toList(),
                   onChanged: (v) => setState(() => _channels = v!),
@@ -794,9 +495,8 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
                 final parsedDur = int.parse(_durationController.text.trim());
                 if (parsedSps * parsedDur * _channels > 1000000) {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                    content: Text("警告：预估数据量超过一百万点，极易导致内存溢出闪退，请调小参数！"),
+                    content: Text("警告：预估数据量超过一百万点，易导致内存溢出闪退，请调小参数！"),
                     backgroundColor: Colors.redAccent,
-                    duration: Duration(seconds: 4),
                   ));
                   return;
                 }
@@ -860,9 +560,6 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
       ),
     );
 
-    // =========================================================
-    // 2. 将右侧/上侧的“数据波形/终端文本流输出”打包为 childB
-    // =========================================================
     final Widget dataDisplaySection = Padding(
       padding: const EdgeInsets.only(left: 4.0, right: 16.0, top: 12.0, bottom: 12.0),
       child: Column(
@@ -878,7 +575,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
               Expanded(
                 child: Text(
                   isCompleted 
-                      ? "本次数据已收齐 (${rawData.length} Bytes / ${widget.pageState.config.duration} 秒)" 
+                      ? "本次数据已收齐 (${rawData.length} Bytes)" 
                       : "正在接收数据 (${rawData.length} / $targetByteLength Bytes)",
                   style: TextStyle(
                     fontSize: 14, 
@@ -891,18 +588,36 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
             ],
           ),
           const Divider(height: 24),
+          
           Expanded(
-            child: Card(
-              elevation: 2,
-              child: Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: SizedBox(
-                  width: double.infinity,
-                  height: double.infinity,
-                  child: SingleChildScrollView(
-                    child: Text(
-                      _buildChannelDisplay(Uint8List.fromList(rawData), widget.pageState.config),
-                      style: const TextStyle(fontFamily: 'monospace', fontSize: 13, color: Colors.blueGrey),
+            child: ScreenSplitter(
+              defaultSplit: 0.5,
+              maxSplit: 0.9,
+              childA: Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: double.infinity,
+                    child: SingleChildScrollView(
+                      child: Text(
+                        _buildChannelDisplay(Uint8List.fromList(rawData), widget.pageState.config),
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 13, color: Colors.blueGrey),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              childB: Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: double.infinity,
+                    child: _ChannelChart(
+                      series: _parseChartData(Uint8List.fromList(rawData), widget.pageState.config),
                     ),
                   ),
                 ),
@@ -944,63 +659,191 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
       ),
     );
 
-    // =========================================================
-    // 3. 核心集成：通过 ScreenSplitter 组合两段布局
-    // =========================================================
     return ScreenSplitter(
-      defaultSplit: 0.7,   // 👈 右半边占屏幕 0.7（左半边自动占 0.3）
-      maxSplit: 0.9,       // 👈 右半边最大可以被拉伸撑满到 0.9
-      childA: formConfigSection,  // 传给左侧/下侧
-      childB: dataDisplaySection, // 传给右侧/上侧
+      defaultSplit: 0.7,   
+      maxSplit: 0.9,       
+      childA: formConfigSection,  
+      childB: dataDisplaySection, 
     );
   }
 }
 
-class _DisconnectedView extends StatelessWidget {
-  final String errorMessage;
-  final VoidCallback onRetry;
-  const _DisconnectedView({required this.errorMessage, required this.onRetry});
+// ==========================================
+// 4. 自定义高性能多通道折线图画布组件
+// ==========================================
+
+class _ChannelChart extends StatelessWidget {
+  final List<List<double>> series;
+  const _ChannelChart({required this.series});
+
+  static const List<Color> channelColors = [
+    Colors.red,
+    Colors.blue,
+    Colors.green,
+    Colors.orange,
+    Colors.purple,
+    Colors.teal,
+    Colors.indigo,
+    Colors.brown,
+  ];
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      key: const ValueKey('disconnected'),
-      child: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.power_off, size: 64, color: Colors.red),
-            const SizedBox(height: 16),
-            const Text("通信链路状态反馈", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            if (errorMessage.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(8)),
-                child: Text(errorMessage, style: TextStyle(color: Colors.red.shade700, fontSize: 13)),
-              ),
-            ],
-            const SizedBox(height: 40),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+    if (series.isEmpty || series[0].isEmpty) {
+      return const Center(
+        child: Text("等待数据流入以生成图表...", style: TextStyle(color: Colors.grey, fontSize: 13)),
+      );
+    }
+
+    double minY = double.infinity;
+    double maxY = -double.infinity;
+    for (var channelData in series) {
+      for (var val in channelData) {
+        if (val < minY) minY = val;
+        if (val > maxY) maxY = val;
+      }
+    }
+
+    if (minY == maxY) {
+      minY -= 1.0;
+      maxY += 1.0;
+    } else {
+      double padding = (maxY - minY) * 0.1; 
+      minY -= padding;
+      maxY += padding;
+    }
+
+    return Column(
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          children: List.generate(series.length, (index) {
+            return Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                ElevatedButton.icon(
-                  onPressed: onRetry, 
-                  icon: const Icon(Icons.sync),
-                  label: const Text("建立通道"),
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    color: channelColors[index % channelColors.length],
+                    shape: BoxShape.circle,
+                  ),
                 ),
-                const SizedBox(width: 16),
-                OutlinedButton.icon(
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.arrow_back),
-                  label: const Text("退出监控"),
-                ),
+                const SizedBox(width: 4),
+                Text("CH${index + 1}", style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
               ],
-            )
-          ],
+            );
+          }),
         ),
-      ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(36, 10, 10, 20),
+            child: CustomPaint(
+              size: Size.infinite,
+              painter: _ChartPainter(
+                series: series,
+                minY: minY,
+                maxY: maxY,
+                colors: channelColors,
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
+}
+
+class _ChartPainter extends CustomPainter {
+  final List<List<double>> series;
+  final double minY;
+  final double maxY;
+  final List<Color> colors;
+
+  _ChartPainter({
+    required this.series,
+    required this.minY,
+    required this.maxY,
+    required this.colors,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paintGrid = Paint()
+      ..color = Colors.grey.shade300
+      ..strokeWidth = 0.5
+      ..style = PaintingStyle.stroke;
+
+    final paintAxis = Paint()
+      ..color = Colors.blueGrey.shade700
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+
+    const int gridCount = 4;
+    final double heightStep = size.height / gridCount;
+    final double valueStep = (maxY - minY) / gridCount;
+
+    final textPainter = TextPainter(
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+    );
+
+    for (int i = 0; i <= gridCount; i++) {
+      double y = size.height - (i * heightStep);
+      if (i > 0 && i < gridCount) {
+        canvas.drawLine(Offset(0, y), Offset(size.width, y), paintGrid);
+      }
+      
+      double currentVal = minY + (i * valueStep);
+      textPainter.text = TextSpan(
+        text: currentVal.toStringAsFixed(1),
+        style: TextStyle(color: Colors.grey.shade600, fontSize: 10, fontFamily: 'monospace'),
+      );
+      textPainter.layout();
+      textPainter.paint(canvas, Offset(-32, y - textPainter.height / 2));
+    }
+
+    canvas.drawLine(Offset(0, size.height), Offset(size.width, size.height), paintAxis); 
+    canvas.drawLine(Offset(0, 0), Offset(0, size.height), paintAxis);                 
+
+    textPainter.text = TextSpan(
+      text: "Time / Frame Index (自适应下采样)",
+      style: TextStyle(color: Colors.grey.shade500, fontSize: 9),
+    );
+    textPainter.layout();
+    textPainter.paint(canvas, Offset(size.width / 2 - textPainter.width / 2, size.height + 6));
+
+    int pointCount = series[0].length;
+    if (pointCount < 2) return;
+
+    final double xStep = size.width / (pointCount - 1);
+
+    for (int c = 0; c < series.length; c++) {
+      final channelData = series[c];
+      final linePaint = Paint()
+        ..color = colors[c % colors.length]
+        ..strokeWidth = 1.8
+        ..style = PaintingStyle.stroke
+        ..strokeJoin = StrokeJoin.round;
+
+      final path = Path();
+      for (int p = 0; p < channelData.length; p++) {
+        double x = p * xStep;
+        double yRatio = (channelData[p] - minY) / (maxY - minY);
+        double y = size.height - (yRatio * size.height);
+
+        if (p == 0) {
+          path.moveTo(x, y);
+        } else {
+          path.lineTo(x, y);
+        }
+      }
+      canvas.drawPath(path, linePaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ChartPainter oldDelegate) => true;
 }
