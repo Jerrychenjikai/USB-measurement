@@ -1,4 +1,4 @@
-package com.example.usb_measurement
+package com.JikaiChen.usb_measurement
 
 import io.flutter.embedding.android.FlutterActivity
 

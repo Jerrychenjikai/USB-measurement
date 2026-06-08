@@ -54,9 +54,8 @@ android {
             // 指定在 release 模式下使用上面的签名配置
             signingConfig = signingConfigs.getByName("release")
             
-            // 开启混淆和资源压缩
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
