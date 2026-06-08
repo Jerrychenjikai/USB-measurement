@@ -5,8 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:usb_measurement/scan_function.dart';
-// import 'package:usb_measurement/android_basic_func.dart';
-import 'package:usb_measurement/desktop_basic_func.dart'; 
 
 // ... (文件上半部分的 enum 和 Config 保持不变) ...
 
