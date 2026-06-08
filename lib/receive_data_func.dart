@@ -5,8 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:usb_measurement/scan_function.dart';
-import 'package:usb_serial/usb_serial.dart';
-import 'package:flutter_libserialport/flutter_libserialport.dart';
+// import 'package:usb_measurement/android_basic_func.dart';
+import 'package:usb_measurement/desktop_basic_func.dart'; 
+
+// ... (文件上半部分的 enum 和 Config 保持不变) ...
 
 // ==========================================
 // 0. 数据类型定义
@@ -134,11 +136,8 @@ class SerialPageState {
 // ==========================================
 
 class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice> {
-  UsbPort? _androidPort;
-  StreamSubscription? _androidSub;
-  SerialPort? _desktopPort;
-  SerialPortReader? _desktopReader;
-  StreamSubscription? _desktopSub;
+  // 核心：只保留这一个与平台无关的底层接口
+  LowLevelSerialPort? _hardwarePort;
 
   bool _isConnecting = false;
   final Queue<int> _buffer = Queue<int>();
@@ -156,33 +155,8 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
   }
 
   Future<void> _cleanup() async {
-    await _androidSub?.cancel();
-    _androidSub = null;
-    if (_androidPort != null) {
-      try { await _androidPort!.close(); } catch (_) {}
-      _androidPort = null;
-    }
-
-    await _desktopSub?.cancel();
-    _desktopSub = null;
-    
-    try {
-      _desktopReader?.close();
-    } catch (e) {
-      debugPrint("Reader close error: $e");
-    }
-    _desktopReader = null;
-
-    try {
-      if (_desktopPort != null) {
-        if (_desktopPort!.isOpen) _desktopPort!.close();
-        _desktopPort!.dispose();
-      }
-    } catch (e) {
-      debugPrint("Port close error: $e");
-    }
-    _desktopPort = null;
-
+    await _hardwarePort?.closeAndDispose();
+    _hardwarePort = null;
     _buffer.clear();
   }
 
@@ -209,90 +183,38 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
         return;
       }
 
-      if (defaultTargetPlatform == TargetPlatform.android) {
-        List<UsbDevice> devices = await UsbSerial.listDevices();
-        UsbDevice? targetDevice;
-        for (var d in devices) {
-            if (d.deviceName == state.device.devicePath) {
-                targetDevice = d;
-                break;
-            }
-        }
-        if (targetDevice == null) throw Exception("未找到对应底层路径的安卓USB设备");
-        
-        _androidPort = await targetDevice.create();
-        if (_androidPort == null) throw Exception("无法获取安卓USB端口");
-
-        bool openResult = await _androidPort!.open();
-        if (!openResult) throw Exception("无法打开安卓USB端口");
-
-        await _androidPort!.setDTR(true);
-        await _androidPort!.setRTS(true);
-        
-        int androidParity = UsbPort.PARITY_NONE;
-        if (state.config.parity == 1) androidParity = UsbPort.PARITY_ODD;
-        if (state.config.parity == 2) androidParity = UsbPort.PARITY_EVEN;
-
-        await _androidPort!.setPortParameters(
-          state.config.baudRate, 
-          state.config.dataBits, 
-          state.config.stopBits, 
-          androidParity
-        );
-
-        final stream = _androidPort!.inputStream;
-        if (stream == null) throw Exception("无法拉取 Android USB 核心输入流");
-
-        _androidSub = stream.listen(
-          (data) => _handleIncomingData(data),
-          onError: (err) => _handleStreamDisconnect("USB 流异常中断: $err"),
-          onDone: () => _handleStreamDisconnect("USB 物理设备已断开连接"),
-        );
-        state = state.copyWith(status: SerialStatus.active); 
-
-      } else if (defaultTargetPlatform == TargetPlatform.windows || 
-                 defaultTargetPlatform == TargetPlatform.macOS || 
-                 defaultTargetPlatform == TargetPlatform.linux) {
-        
-        _desktopPort = SerialPort(state.device.devicePath);
-        if (!_desktopPort!.openReadWrite()) {
-          final lastErr = SerialPort.lastError;
-          _desktopPort = null;
-          throw Exception("打开串口失败: $lastErr");
-        }
-
-        final spConfig = _desktopPort!.config;
-        spConfig.baudRate = state.config.baudRate;
-        spConfig.bits = state.config.dataBits;
-        spConfig.stopBits = state.config.stopBits;
-        
-        int desktopParity = SerialPortParity.none;
-        if (state.config.parity == 1) desktopParity = SerialPortParity.odd;
-        if (state.config.parity == 2) desktopParity = SerialPortParity.even;
-        spConfig.parity = desktopParity;
-        
-        _desktopPort!.config = spConfig; 
-
-        try {
-          _desktopReader = SerialPortReader(_desktopPort!);
-          _desktopSub = _desktopReader!.stream.listen(
-            (data) => _handleIncomingData(data),
-            onError: (err) => _handleStreamDisconnect("串口流异常中断: $err"),
-            onDone: () => _handleStreamDisconnect("串口被意外关闭或移除"),
-          );
-        } catch (e) {
-          throw Exception("创建硬件流监听失败，端口可能被独占: $e");
-        }
-
-        state = state.copyWith(status: SerialStatus.active); 
-      } else {
-        throw Exception("当前操作系统平台无匹配的串口驱动链");
+      // 1. 初始化统一控制器
+      _hardwarePort = LowLevelSerialPort();
+      
+      // 2. 打开设备通道
+      bool success = await _hardwarePort!.open(state.device.devicePath);
+      if (!success) {
+        throw Exception("无法打开设备硬件通道，端口可能不存在或被独占");
       }
+
+      // 3. 配置默认参数 (比如首次连接默认 115200 8N1)
+      await _hardwarePort!.configure(
+        baudRate: state.config.baudRate,
+        dataBits: state.config.dataBits,
+        stopBits: state.config.stopBits,
+        parity: state.config.parity,
+      );
+
+      // 4. 监听统一的数据流
+      _hardwarePort!.listenStream.listen(
+        (data) => _handleIncomingData(data),
+        onError: (err) => _handleStreamDisconnect("硬件流异常中断: $err"),
+        onDone: () => _handleStreamDisconnect("物理设备已断开连接"),
+      );
+
+      state = state.copyWith(status: SerialStatus.active); 
+
     } catch (e) {
       state = state.copyWith(
         status: SerialStatus.disconnected,
         errorMessage: e.toString(),
       );
+      await _cleanup();
     } finally {
       _isConnecting = false;
     }
@@ -300,42 +222,24 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
 
   Future<void> sendCommand(ProtocolConfig config) async {
     try {
-      if (defaultTargetPlatform == TargetPlatform.android && _androidPort != null) {
-        int androidParity = UsbPort.PARITY_NONE;
-        if (config.parity == 1) androidParity = UsbPort.PARITY_ODD;
-        if (config.parity == 2) androidParity = UsbPort.PARITY_EVEN;
-
-        await _androidPort!.setPortParameters(
-          config.baudRate, 
-          config.dataBits, 
-          config.stopBits, 
-          androidParity,
-        );
-      } else if (_desktopPort != null && _desktopPort!.isOpen) {
-        final spConfig = _desktopPort!.config;
-        spConfig.baudRate = config.baudRate;
-        spConfig.bits = config.dataBits;
-        spConfig.stopBits = config.stopBits;
-        
-        int desktopParity = SerialPortParity.none;
-        if (config.parity == 1) desktopParity = SerialPortParity.odd;
-        if (config.parity == 2) desktopParity = SerialPortParity.even;
-        
-        spConfig.parity = desktopParity;
-        _desktopPort!.config = spConfig; 
-      } else {
+      if (_hardwarePort == null) {
         throw Exception("通信通道未打开或已断开");
       }
+
+      // 1. 应用新的物理层参数配置
+      await _hardwarePort!.configure(
+        baudRate: config.baudRate,
+        dataBits: config.dataBits,
+        stopBits: config.stopBits,
+        parity: config.parity,
+      );
 
       _buffer.clear();
       state = state.copyWith(config: config, currentDisplayData: []);
 
+      // 2. 将协议层的控制指令转化为字节并下发
       final cmd = Uint8List.fromList(config.controlBytes);
-      if (defaultTargetPlatform == TargetPlatform.android && _androidPort != null) {
-        await _androidPort!.write(cmd); 
-      } else if (_desktopPort != null && _desktopPort!.isOpen) {
-        _desktopPort!.write(cmd);
-      }
+      await _hardwarePort!.writeData(cmd);
 
     } catch (e) {
       debugPrint("向MCU下发控制命令失败: $e");
@@ -348,7 +252,7 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
 
   void disconnectDevice() async {
     await _cleanup();
-    state = state.copyWith(status: SerialStatus.disconnected, errorMessage: "用户手动断开串口");
+    state = state.copyWith(status: SerialStatus.disconnected, errorMessage: "用户手动断开连接");
   }
 
   void _handleIncomingData(List<int> data) {

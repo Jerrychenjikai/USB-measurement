@@ -1,60 +1,17 @@
+// scan_function.dart
 import 'dart:io' show Platform;
-import 'package:usb_serial/usb_serial.dart';
-import 'package:flutter_libserialport/flutter_libserialport.dart';
 
-class MySerialDevice {
-  final String name;
-  final String devicePath;
+// ==================== 平台切换分水岭 ====================
+// 如果编译 Android，请注释掉 desktop，打开 android：
+// export 'android_basic_func.dart';
 
-  MySerialDevice({required this.name, required this.devicePath});
+export 'desktop_basic_func.dart';
+// =======================================================
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is MySerialDevice &&
-          runtimeType == other.runtimeType &&
-          devicePath == other.devicePath; 
-
-  @override
-  int get hashCode => devicePath.hashCode;
-}
+// 依然提供这个函数名，供外部（如主页）调用，内部直接代理给底层函数
+import 'desktop_basic_func.dart'; // 这里的引入需要和上面 export 保持一致
 
 Future<List<MySerialDevice>> getAvailablePorts() async {
-  List<MySerialDevice> availableDevices = [];
-
-  try {
-    if (Platform.isAndroid) {
-      List<UsbDevice> devices = await UsbSerial.listDevices();
-      for (var device in devices) {
-        String displayName = device.productName ?? 'Unknown USB Device';
-        availableDevices.add(
-          MySerialDevice(
-            name: displayName,
-            devicePath: device.deviceName ?? 'Unknown Path',
-          ),
-        );
-      }
-    } else if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
-      final ports = SerialPort.availablePorts;
-      for (var portAddress in ports) {
-        final port = SerialPort(portAddress);
-        try {
-          String displayName = port.description ?? 'Unknown Serial Port';
-          availableDevices.add(
-            MySerialDevice(
-              name: '$portAddress - $displayName', 
-              devicePath: portAddress, 
-            ),
-          );
-        } finally {
-          // 【修复】无论获取描述是否抛错，严格释放临时端口实例
-          port.dispose(); 
-        }
-      }
-    }
-  } catch (e) {
-    print("扫描设备时发生错误: $e");
-  }
-
-  return availableDevices;
+  // 直接调用我们在底层文件中封装好的同名函数
+  return await lowLevelScanDevices();
 }
