@@ -185,7 +185,7 @@ class RxPacketParser {
           parsedRecord.add(0.0);
           continue;
         }
-        parsedRecord.add(_readFromByteData(dataView, baseOffset, item.type));
+        parsedRecord.add(_readFromByteData(dataView, baseOffset, item.type, item.isBigEndian));
       } else {
         // 核心亮点：如果是变长段下的可重复变量，其吸纳范围是除去所有已知固定开销后的剩余全部空间
         int currentPos = baseOffset;
@@ -201,7 +201,7 @@ class RxPacketParser {
         }
 
         while (currentPos + elementSize <= endLimit) {
-          parsedRecord.add(_readFromByteData(dataView, currentPos, item.type));
+          parsedRecord.add(_readFromByteData(dataView, currentPos, item.type, item.isBigEndian));
           currentPos += elementSize;
         }
       }
@@ -209,16 +209,15 @@ class RxPacketParser {
     return parsedRecord;
   }
 
-  static double _readFromByteData(ByteData data, int offset, UsbDataType type) {
-    // 默认小端序（硬件高频使用），可根据Tx习惯加入Endian配置
+  static double _readFromByteData(ByteData data, int offset, UsbDataType type, bool isBigEndian) {
     switch (type) {
       case UsbDataType.int8: return data.getInt8(offset).toDouble();
       case UsbDataType.uint8: return data.getUint8(offset).toDouble();
-      case UsbDataType.int16: return data.getInt16(offset, Endian.little).toDouble();
-      case UsbDataType.uint16: return data.getUint16(offset, Endian.little).toDouble();
-      case UsbDataType.int32: return data.getInt32(offset, Endian.little).toDouble();
-      case UsbDataType.uint32: return data.getUint32(offset, Endian.little).toDouble();
-      case UsbDataType.float32: return data.getFloat32(offset, Endian.little);
+      case UsbDataType.int16: return data.getInt16(offset, isBigEndian ? Endian.big : Endian.little).toDouble();
+      case UsbDataType.uint16: return data.getUint16(offset, isBigEndian ? Endian.big : Endian.little).toDouble();
+      case UsbDataType.int32: return data.getInt32(offset, isBigEndian ? Endian.big : Endian.little).toDouble();
+      case UsbDataType.uint32: return data.getUint32(offset, isBigEndian ? Endian.big : Endian.little).toDouble();
+      case UsbDataType.float32: return data.getFloat32(offset, isBigEndian ? Endian.big : Endian.little);
     }
   }
 }

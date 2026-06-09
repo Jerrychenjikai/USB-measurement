@@ -406,7 +406,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
             children: [
               Expanded(
                 child: DropdownButtonFormField<UsbDataType>(
-                  value: _dataType,
+                  initialValue: _dataType,
                   decoration: const InputDecoration(
                     labelText: "数据类型", 
                     border: OutlineInputBorder(),
@@ -421,7 +421,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
               const SizedBox(width: 8),
               Expanded(
                 child: DropdownButtonFormField<int>(
-                  value: _channels,
+                  initialValue: _channels,
                   decoration: const InputDecoration(
                     labelText: "通道数", 
                     border: OutlineInputBorder(),
@@ -441,7 +441,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
           const SizedBox(height: 12),
 
           DropdownButtonFormField<int>(
-            value: _baudRate,
+            initialValue: _baudRate,
             decoration: const InputDecoration(
               labelText: "波特率", 
               border: OutlineInputBorder(),
@@ -458,7 +458,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
             children: [
               Expanded(
                 child: DropdownButtonFormField<int>(
-                  value: _dataBits,
+                  initialValue: _dataBits,
                   decoration: const InputDecoration(
                     labelText: "数据位", 
                     border: OutlineInputBorder(),
@@ -471,7 +471,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
               const SizedBox(width: 8),
               Expanded(
                 child: DropdownButtonFormField<int>(
-                  value: _stopBits,
+                  initialValue: _stopBits,
                   decoration: const InputDecoration(
                     labelText: "停止位", 
                     border: OutlineInputBorder(),
@@ -484,7 +484,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
               const SizedBox(width: 8),
               Expanded(
                 child: DropdownButtonFormField<int>(
-                  value: _parity,
+                  initialValue: _parity,
                   decoration: const InputDecoration(
                     labelText: "校验", 
                     border: OutlineInputBorder(),

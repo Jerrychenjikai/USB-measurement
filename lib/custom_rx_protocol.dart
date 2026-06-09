@@ -19,6 +19,7 @@ class RxProtocolItem {
   int offset; 
   OffsetReference reference;
   bool isRepeatable; // 是否为可重复出现的动态变量（用于覆盖动态帧长）
+  bool isBigEndian;
 
   RxProtocolItem({
     required this.name,
@@ -26,6 +27,7 @@ class RxProtocolItem {
     this.offset = 0,
     this.reference = OffsetReference.fromHeader,
     this.isRepeatable = false,
+    this.isBigEndian = true,
   });
 
   RxProtocolItem clone() {
@@ -35,6 +37,7 @@ class RxProtocolItem {
       offset: offset,
       reference: reference,
       isRepeatable: isRepeatable,
+      isBigEndian: isBigEndian,
     );
   }
 }
@@ -162,7 +165,7 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
                   children: [
                     Expanded(
                       child: DropdownButtonFormField<bool>(
-                        value: _isLengthFixed,
+                        initialValue: _isLengthFixed,
                         decoration: const InputDecoration(labelText: "帧长模式"),
                         // 如果没有帧头，禁用此下拉框，强制设为固定值
                         items: !hasHeader 
@@ -211,7 +214,7 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
                   children: [
                     Expanded(
                       child: DropdownButtonFormField<ChecksumType>(
-                        value: _checksumType,
+                        initialValue: _checksumType,
                         decoration: const InputDecoration(labelText: "校验算法"),
                         items: ChecksumType.values.map((t) => DropdownMenuItem(value: t, child: Text(t.name.toUpperCase()))).toList(),
                         onChanged: (val) => setState(() => _checksumType = val!),
@@ -229,7 +232,7 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: DropdownButtonFormField<OffsetReference>(
-                          value: _checksumRef,
+                          initialValue: _checksumRef,
                           items: const [
                             DropdownMenuItem(value: OffsetReference.fromHeader, child: Text("从头计算")),
                             DropdownMenuItem(value: OffsetReference.fromTail, child: Text("从尾逆向")),
@@ -287,12 +290,20 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
                                 Expanded(
                                   flex: 3,
                                   child: DropdownButtonFormField<UsbDataType>(
-                                    value: item.type,
+                                    initialValue: item.type,
                                     decoration: const InputDecoration(labelText: "类型"),
                                     items: UsbDataType.values.map((t) => DropdownMenuItem(value: t, child: Text(t.label))).toList(),
                                     onChanged: (v) => setState(() => item.type = v!),
                                   ),
                                 ),
+                                if (item.type.byteSize > 1)
+                                  IconButton(
+                                    icon: Icon(item.isBigEndian ? Icons.arrow_downward : Icons.arrow_upward, size: 18),
+                                    tooltip: item.isBigEndian ? "大端序(MSB)" : "小端序(LSB)",
+                                    onPressed: () {
+                                      setState(() => item.isBigEndian = !item.isBigEndian);
+                                    },
+                                  ),
                               ],
                             ),
                             Row(
@@ -310,7 +321,7 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
                                 Expanded(
                                   flex: 3,
                                   child: DropdownButtonFormField<OffsetReference>(
-                                    value: item.reference,
+                                    initialValue: item.reference,
                                     decoration: const InputDecoration(labelText: "偏移参考点"),
                                     items: [
                                       const DropdownMenuItem(value: OffsetReference.fromHeader, child: Text("正向 (自流头/正轴)")),
