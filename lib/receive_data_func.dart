@@ -52,19 +52,8 @@ class ProtocolConfig {
     return txProtocol.buildBytes(sps: sps, duration: duration);
   }
 
-  // ====== 以下是原先被你硬编码保留的接收端逻辑，必须保留 ======
-  
-  /// 计算单个数据包（即所有通道采样一次）所占用的字节大小
-  int get wordSize => dataType.byteSize;
-
-  /// 计算一帧（包含所有通道当前点的数据）的字节总数
-  int get frameSize => wordSize * channels;
-
   /// 计算在指定的采样率和时间内，预期的总帧数
   int get totalExpectedFrames => sps * duration;
-
-  /// 整个采集生命周期中，下位机应当上传的理论二进制总字节数
-  int get targetByteLength => frameSize * totalExpectedFrames;
 
   // ====== 记得同步修改的 copyWith 方法，把 txProtocol 传进去 ======
   ProtocolConfig copyWith({
@@ -98,7 +87,6 @@ class SerialPageState {
   final ProtocolConfig config;
   final List<List<double>> currentDisplayData; 
   final String? errorMessage;
-  // 新增：用户当前配置的接收解包协议
   final CustomRxProtocol? rxProtocol; 
 
   SerialPageState({
@@ -107,7 +95,7 @@ class SerialPageState {
     required this.config,
     required this.currentDisplayData,
     this.errorMessage,
-    this.rxProtocol, // 新增
+    this.rxProtocol,
   });
 
   SerialPageState copyWith({
