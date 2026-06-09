@@ -222,8 +222,6 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
   late TextEditingController _spsController;
   late TextEditingController _durationController;
   
-  UsbDataType _dataType = UsbDataType.float32;
-  int _channels = 1;
   int _baudRate = 115200;
   int _dataBits = 8;
   int _stopBits = 1;
@@ -234,8 +232,6 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
     super.initState();
     _spsController = TextEditingController(text: widget.pageState.config.sps.toString());
     _durationController = TextEditingController(text: widget.pageState.config.duration.toString());
-    _dataType = widget.pageState.config.dataType;
-    _channels = widget.pageState.config.channels;
     _baudRate = widget.pageState.config.baudRate;
     _dataBits = widget.pageState.config.dataBits;
     _stopBits = widget.pageState.config.stopBits;
@@ -400,41 +396,6 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
               return null;
             },
           ),
-          const SizedBox(height: 16),
-          
-          Row(
-            children: [
-              Expanded(
-                child: DropdownButtonFormField<UsbDataType>(
-                  initialValue: _dataType,
-                  decoration: const InputDecoration(
-                    labelText: "数据类型", 
-                    border: OutlineInputBorder(),
-                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                  ),
-                  items: UsbDataType.values
-                      .map((e) => DropdownMenuItem(value: e, child: Text(e.label)))
-                      .toList(),
-                  onChanged: (v) => setState(() => _dataType = v!),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: DropdownButtonFormField<int>(
-                  initialValue: _channels,
-                  decoration: const InputDecoration(
-                    labelText: "通道数", 
-                    border: OutlineInputBorder(),
-                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                  ),
-                  items: [1, 2, 3, 4, 5, 6, 7, 8] 
-                      .map((e) => DropdownMenuItem(value: e, child: Text("$e CH")))
-                      .toList(),
-                  onChanged: (v) => setState(() => _channels = v!),
-                ),
-              ),
-            ],
-          ),
           const SizedBox(height: 24),
           
           const Text("物理层参数", style: TextStyle(color: Colors.grey, fontSize: 13)),
@@ -507,7 +468,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
               if (_formKey.currentState?.validate() ?? false) {
                 final parsedSps = int.parse(_spsController.text.trim());
                 final parsedDur = int.parse(_durationController.text.trim());
-                if (parsedSps * parsedDur * _channels > 1000000) {
+                if (parsedSps * parsedDur > 1000000) {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                     content: Text("警告：预估数据量超过一百万点，易导致内存溢出闪退，请调小参数！"),
                     backgroundColor: Colors.redAccent,
@@ -518,8 +479,6 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
                 final config = ProtocolConfig(
                   sps: parsedSps,
                   duration: parsedDur,
-                  dataType: _dataType,
-                  channels: _channels,
                   baudRate: _baudRate,
                   dataBits: _dataBits,
                   stopBits: _stopBits,

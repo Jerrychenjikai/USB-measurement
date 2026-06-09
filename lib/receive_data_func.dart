@@ -24,8 +24,6 @@ enum SerialStatus {
 class ProtocolConfig {
   final int sps;           // 采样率 (Hz)
   final int duration;      // 传输时间 (秒)
-  final UsbDataType dataType; // 数据类型
-  final int channels;      // 通道数
   
   final int baudRate;      // 波特率
   final int dataBits;      // 数据位
@@ -38,8 +36,6 @@ class ProtocolConfig {
   ProtocolConfig({
     required this.sps,
     required this.duration,
-    required this.dataType,
-    required this.channels,
     required this.baudRate,
     required this.dataBits,
     required this.stopBits,
@@ -59,8 +55,6 @@ class ProtocolConfig {
   ProtocolConfig copyWith({
     int? sps,
     int? duration,
-    UsbDataType? dataType,
-    int? channels,
     int? baudRate,
     int? dataBits,
     int? stopBits,
@@ -70,8 +64,6 @@ class ProtocolConfig {
     return ProtocolConfig(
       sps: sps ?? this.sps,
       duration: duration ?? this.duration,
-      dataType: dataType ?? this.dataType,
-      channels: channels ?? this.channels,
       baudRate: baudRate ?? this.baudRate,
       dataBits: dataBits ?? this.dataBits,
       stopBits: stopBits ?? this.stopBits,
@@ -139,8 +131,6 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
       config: ProtocolConfig(
         sps: 1000,
         duration: 10,
-        dataType: UsbDataType.float32, // 默认数据类型
-        channels: 3,                   // 默认 3 通道
         baudRate: 115200,
         dataBits: 8,
         stopBits: 1,
