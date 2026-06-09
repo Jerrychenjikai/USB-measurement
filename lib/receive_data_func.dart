@@ -5,31 +5,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:usb_measurement/scan_function.dart';
+import 'package:usb_measurement/custom_protocol.dart';
+import 'package:usb_measurement/basic_func.dart';
+import 'package:usb_measurement/custom_rx_protocol.dart';
+import 'package:usb_measurement/rx_packet_parser.dart';
 
-// ... (文件上半部分的 enum 和 Config 保持不变) ...
-
-// ==========================================
-// 0. 数据类型定义
-// ==========================================
-enum UsbDataType { int8, uint8, int16, uint16, int32, uint32, float32 }
-
-extension UsbDataTypeExt on UsbDataType {
-  int get byteSize {
-    switch (this) {
-      case UsbDataType.int8:
-      case UsbDataType.uint8: return 1;
-      case UsbDataType.int16:
-      case UsbDataType.uint16: return 2;
-      case UsbDataType.int32:
-      case UsbDataType.uint32:
-      case UsbDataType.float32: return 4;
-    }
-  }
-
-  String get label {
-    return toString().split('.').last;
-  }
-}
 
 // ==========================================
 // 1. 状态机及协议配置的数据结构定义
@@ -42,38 +22,51 @@ enum SerialStatus {
 }
 
 class ProtocolConfig {
-  final int sps;           
-  final int duration;      
-  final UsbDataType dataType; 
-  final int channels;      
+  final int sps;           // 采样率 (Hz)
+  final int duration;      // 传输时间 (秒)
+  final UsbDataType dataType; // 数据类型
+  final int channels;      // 通道数
   
-  final int baudRate;      
-  final int dataBits;      
-  final int stopBits;      
-  final int parity;        
+  final int baudRate;      // 波特率
+  final int dataBits;      // 数据位
+  final int stopBits;      // 停止位
+  final int parity;        // 校验位 (0:None, 1:Odd, 2:Even)
+
+  // ====== 新增：存储用户自定义的发送协议结构 ======
+  final CustomTxProtocol txProtocol; 
 
   ProtocolConfig({
-    this.sps = 30,
-    this.duration = 10,    
-    this.dataType = UsbDataType.int16, 
-    this.channels = 1,     
-    this.baudRate = 115200,
-    this.dataBits = 8,
-    this.stopBits = 1,
-    this.parity = 0,
+    required this.sps,
+    required this.duration,
+    required this.dataType,
+    required this.channels,
+    required this.baudRate,
+    required this.dataBits,
+    required this.stopBits,
+    required this.parity,
+    required this.txProtocol, // 必须传入
   });
 
-  int get targetByteLength => duration * sps * channels * dataType.byteSize;
-
-  List<int> get controlBytes {
-    return [
-      0x43,
-      sps & 0xFF,
-      (duration >> 8) & 0xFF, 
-      duration & 0xFF,
-    ];
+  // ====== 核心重构：利用自定类动态构建原本硬编码的字节流 ======
+  Uint8List get controlBytes {
+    return txProtocol.buildBytes(sps: sps, duration: duration);
   }
 
+  // ====== 以下是原先被你硬编码保留的接收端逻辑，必须保留 ======
+  
+  /// 计算单个数据包（即所有通道采样一次）所占用的字节大小
+  int get wordSize => dataType.byteSize;
+
+  /// 计算一帧（包含所有通道当前点的数据）的字节总数
+  int get frameSize => wordSize * channels;
+
+  /// 计算在指定的采样率和时间内，预期的总帧数
+  int get totalExpectedFrames => sps * duration;
+
+  /// 整个采集生命周期中，下位机应当上传的理论二进制总字节数
+  int get targetByteLength => frameSize * totalExpectedFrames;
+
+  // ====== 记得同步修改的 copyWith 方法，把 txProtocol 传进去 ======
   ProtocolConfig copyWith({
     int? sps,
     int? duration,
@@ -83,6 +76,7 @@ class ProtocolConfig {
     int? dataBits,
     int? stopBits,
     int? parity,
+    CustomTxProtocol? txProtocol,
   }) {
     return ProtocolConfig(
       sps: sps ?? this.sps,
@@ -93,6 +87,7 @@ class ProtocolConfig {
       dataBits: dataBits ?? this.dataBits,
       stopBits: stopBits ?? this.stopBits,
       parity: parity ?? this.parity,
+      txProtocol: txProtocol ?? this.txProtocol,
     );
   }
 }
@@ -101,30 +96,35 @@ class SerialPageState {
   final SerialStatus status;
   final MySerialDevice device;
   final ProtocolConfig config;
-  final List<int> currentDisplayData; 
-  final String errorMessage;
+  final List<List<double>> currentDisplayData; 
+  final String? errorMessage;
+  // 新增：用户当前配置的接收解包协议
+  final CustomRxProtocol? rxProtocol; 
 
   SerialPageState({
-    required this.status,
     required this.device,
+    required this.status,
     required this.config,
-    this.currentDisplayData = const [],
-    this.errorMessage = "",
+    required this.currentDisplayData,
+    this.errorMessage,
+    this.rxProtocol, // 新增
   });
 
   SerialPageState copyWith({
-    SerialStatus? status,
     MySerialDevice? device,
+    SerialStatus? status,
     ProtocolConfig? config,
-    List<int>? currentDisplayData,
+    List<List<double>>? currentDisplayData,
     String? errorMessage,
+    CustomRxProtocol? rxProtocol, // 新增
   }) {
     return SerialPageState(
-      status: status ?? this.status,
       device: device ?? this.device,
+      status: status ?? this.status,
       config: config ?? this.config,
       currentDisplayData: currentDisplayData ?? this.currentDisplayData,
       errorMessage: errorMessage ?? this.errorMessage,
+      rxProtocol: rxProtocol ?? this.rxProtocol, // 新增
     );
   }
 }
@@ -148,7 +148,18 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
     return SerialPageState(
       status: SerialStatus.connecting,
       device: arg,
-      config: ProtocolConfig(),
+      currentDisplayData: const [],
+      config: ProtocolConfig(
+        sps: 100,
+        duration: 10,
+        dataType: UsbDataType.float32,
+        channels: 1,
+        baudRate: 115200,
+        dataBits: 8,
+        stopBits: 1,
+        parity: 0,
+        txProtocol: CustomTxProtocol(items: []), // 确保传入一个初始TX协议实例
+      ),
     );
   }
 
@@ -253,22 +264,39 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
     state = state.copyWith(status: SerialStatus.disconnected, errorMessage: "用户手动断开连接");
   }
 
+  // 【新增方法1】仅更新配置不发送指令（用于配置TX）
+  void updateConfigWithoutSending(ProtocolConfig newConfig) {
+    state = state.copyWith(config: newConfig);
+  }
+
+  // 【新增方法2】更新RX接收协议
+  void updateRxProtocol(CustomRxProtocol protocol) {
+    // 同时把协议更新到 config 和外层的 rxProtocol 中
+    state = state.copyWith(rxProtocol: protocol);
+  }
+
   void _handleIncomingData(List<int> data) {
     if (state.status != SerialStatus.active) return;
     
-    final targetLength = state.config.targetByteLength;
-    if (_buffer.length >= targetLength) return;
+    _buffer.addAll(data);
 
-    int remaining = targetLength - _buffer.length;
-    if (data.length > remaining) {
-      _buffer.addAll(data.take(remaining));
-    } else {
-      _buffer.addAll(data);
+    if (state.rxProtocol == null) return;
+
+    // 高性能解析
+    List<List<double>> parsedFrames = RxPacketParser.parseStream(_buffer, state.rxProtocol!);
+
+    if (parsedFrames.isEmpty) return;
+
+    // 【修复占位符】将新解析出的帧追加到历史记录中
+    List<List<double>> updatedHistory = List.from(state.currentDisplayData);
+    updatedHistory.addAll(parsedFrames);
+
+    // 内存保护：限制最大显示帧数（例如最大缓存100万点，按需调整）
+    if (updatedHistory.length > 50000) {
+       updatedHistory = updatedHistory.sublist(updatedHistory.length - 50000);
     }
-    
-    state = state.copyWith(
-      currentDisplayData: _buffer.toList(),
-    );
+
+    state = state.copyWith(currentDisplayData: updatedHistory); 
   }
 }
 

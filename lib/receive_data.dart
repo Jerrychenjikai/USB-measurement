@@ -3,10 +3,14 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart'; 
+import 'package:flutter_speed_dial/flutter_speed_dial.dart';
 
 import 'package:usb_measurement/scan_function.dart'; 
 import 'package:usb_measurement/template.dart';
 import 'package:usb_measurement/receive_data_func.dart'; // 引入已分离的状态机与逻辑
+import 'package:usb_measurement/custom_protocol.dart';
+import 'package:usb_measurement/custom_rx_protocol.dart';
+import 'package:usb_measurement/basic_func.dart';
 
 // ==========================================
 // 3. 页面主体渲染及交互视图
@@ -30,6 +34,74 @@ class SerialMonitorPage extends ConsumerWidget {
         duration: const Duration(milliseconds: 200),
         child: _buildStateView(context, pageState, notifier),
       ),
+      floatingActionButton: pageState.status == SerialStatus.disconnected
+          ? SpeedDial(
+              child: const Icon(Icons.keyboard_arrow_up),
+              closeManually: false,
+              activeChild: const Icon(Icons.close),
+              direction: SpeedDialDirection.up,
+              animationCurve: Curves.easeInOutCubic,
+              overlayColor: Theme.of(context).colorScheme.secondary,
+              overlayOpacity: 0.4,
+              spacing: 8,
+              spaceBetweenChildren: 12,
+              children: [
+                SpeedDialChild(
+                  child: const Icon(Icons.settings_ethernet),
+                  backgroundColor: Theme.of(context).colorScheme.surfaceContainerLow,
+                  foregroundColor: Colors.black,
+                  label: "配置TX协议 (${pageState.config.txProtocol.items.length})",
+                  onTap: () async {
+                    // 呼出上一步在 custom_protocol.dart 中编写的配置弹窗
+                    final CustomTxProtocol? updatedProtocol = await showDialog<CustomTxProtocol>(
+                      context: context,
+                      builder: (context) => ProtocolConfigDialog(
+                        initialProtocol: pageState.config.txProtocol,
+                      ),
+                    );
+
+                    // 如果用户点击了弹窗的“完成”并回传了新协议，则将其更新到状态机中
+                    if (updatedProtocol != null) {
+                      final newConfig = pageState.config.copyWith(txProtocol: updatedProtocol);
+                      
+                      // 调用 notifier 仅更新配置，不发送控制指令（因为此时可能还没连接硬件）
+                      notifier.updateConfigWithoutSending(newConfig);
+                    }
+                  },
+                ),
+                SpeedDialChild(
+                  child: const Icon(Icons.settings_ethernet),
+                  backgroundColor: Theme.of(context).colorScheme.surfaceContainerLow,
+                  foregroundColor: Colors.black,
+                  label: '配置RX协议',
+                  onTap: () async {
+                    // 1. 弹出右侧/中央的协议配置窗口，并将当前状态里已有的 rxProtocol 传进去作为初始值
+                    final CustomRxProtocol? result = await showDialog<CustomRxProtocol>(
+                      context: context,
+                      barrierDismissible: false, // 强制用户必须点击保存或取消
+                      builder: (context) => RxProtocolDialog(
+                        initialProtocol: pageState.rxProtocol, 
+                      ),
+                    );
+
+                    // 2. 如果用户点击了“保存应用”并返回了有效的协议对象
+                    if (result != null && context.mounted) {
+                      // 3. 调用 notifier 的方法，将新的接收协议更新到 Riverpod 状态机中
+                      notifier.updateRxProtocol(result);
+
+                      // 4. 气泡提示配置成功
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text("RX 接收协议应用成功！数据流将按新规则解析。"),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  },
+                ),
+              ],
+            )
+          : null, // 当处于 active(正在采集) 或 connecting 状态时，隐藏按钮防误触
     );
   }
 
@@ -45,7 +117,7 @@ class SerialMonitorPage extends ConsumerWidget {
         );
       case SerialStatus.disconnected:
         return _DisconnectedView(
-          errorMessage: pageState.errorMessage,
+          errorMessage: pageState.errorMessage ?? "",
           onRetry: () => notifier.connectDevice(),
         );
     }
@@ -176,46 +248,31 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
     super.dispose();
   }
 
-  String _buildChannelDisplay(Uint8List rawData, ProtocolConfig config) {
-    if (rawData.isEmpty) return "等待数据流输入...";
-    final int wordSize = config.dataType.byteSize;
-    final int frameSize = wordSize * config.channels;
-    final int totalFrames = rawData.length ~/ frameSize;
+  String _buildChannelDisplay(List<List<double>> parsedData) {
+    if (parsedData.isEmpty) return "等待数据流输入...";
     
-    if (totalFrames == 0) return "接收数据不足单帧长度 (${rawData.length} Bytes)";
-    
-    final ByteData byteData = ByteData.sublistView(rawData);
     final StringBuffer sb = StringBuffer();
-    
+    int channels = parsedData.first.length;
+
     sb.write("Frame".padRight(8));
-    for (int c = 0; c < config.channels; c++) {
+    for (int c = 0; c < channels; c++) {
       sb.write("CH${c + 1}".padRight(14));
     }
     sb.writeln();
-    sb.writeln("-" * (8 + 14 * config.channels));
+    sb.writeln("-" * (8 + 14 * channels));
 
+    final int totalFrames = parsedData.length;
     final int startFrame = (totalFrames > 30) ? totalFrames - 30 : 0;
     
     for (int f = startFrame; f < totalFrames; f++) {
       sb.write("${f + 1}".padRight(8));
-      final int frameOffset = f * frameSize;
-      
-      for (int c = 0; c < config.channels; c++) {
-        final int byteOffset = frameOffset + (c * wordSize);
-        dynamic val = 0;
-        
-        switch (config.dataType) {
-          case UsbDataType.int8: val = byteData.getInt8(byteOffset); break;
-          case UsbDataType.uint8: val = byteData.getUint8(byteOffset); break;
-          case UsbDataType.int16: val = byteData.getInt16(byteOffset, Endian.little); break;
-          case UsbDataType.uint16: val = byteData.getUint16(byteOffset, Endian.little); break;
-          case UsbDataType.int32: val = byteData.getInt32(byteOffset, Endian.little); break;
-          case UsbDataType.uint32: val = byteData.getUint32(byteOffset, Endian.little); break;
-          case UsbDataType.float32: val = byteData.getFloat32(byteOffset, Endian.little); break;
+      for (int c = 0; c < channels; c++) {
+        // 防止由于协议配置通道数和实际解包通道数不一致导致的越界
+        if (c < parsedData[f].length) {
+          sb.write(parsedData[f][c].toStringAsFixed(4).padRight(14));
+        } else {
+          sb.write("N/A".padRight(14));
         }
-        
-        String valStr = (val is double) ? val.toStringAsFixed(4) : val.toString();
-        sb.write(valStr.padRight(14));
       }
       sb.writeln();
     }
@@ -223,122 +280,65 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
     if (totalFrames > 30) {
       sb.writeln("\n... 已省略前期 ${totalFrames - 30} 帧历史数据 (仅展示最新30条) ...");
     }
-    
     return sb.toString();
   }
 
-  List<List<double>> _parseChartData(Uint8List rawData, ProtocolConfig config) {
-    if (rawData.isEmpty) return [];
-    final int wordSize = config.dataType.byteSize;
-    final int frameSize = wordSize * config.channels;
-    final int totalFrames = rawData.length ~/ frameSize;
-    if (totalFrames == 0) return [];
-
-    final ByteData byteData = ByteData.sublistView(rawData);
+  List<List<double>> _parseChartData(List<List<double>> parsedData) {
+    if (parsedData.isEmpty) return [];
+    
+    int channels = parsedData.first.length;
+    int totalFrames = parsedData.length;
     
     int step = 1;
-    if (totalFrames > 300) {
-      step = totalFrames ~/ 300; 
-    }
+    if (totalFrames > 300) step = totalFrames ~/ 300; 
 
-    List<List<double>> series = List.generate(config.channels, (_) => []);
+    List<List<double>> series = List.generate(channels, (_) => []);
 
     for (int f = 0; f < totalFrames; f += step) {
-      final int frameOffset = f * frameSize;
-      for (int c = 0; c < config.channels; c++) {
-        final int byteOffset = frameOffset + (c * wordSize);
-        double val = 0.0;
-        switch (config.dataType) {
-          case UsbDataType.int8: val = byteData.getInt8(byteOffset).toDouble(); break;
-          case UsbDataType.uint8: val = byteData.getUint8(byteOffset).toDouble(); break;
-          case UsbDataType.int16: val = byteData.getInt16(byteOffset, Endian.little).toDouble(); break;
-          case UsbDataType.uint16: val = byteData.getUint16(byteOffset, Endian.little).toDouble(); break;
-          case UsbDataType.int32: val = byteData.getInt32(byteOffset, Endian.little).toDouble(); break;
-          case UsbDataType.uint32: val = byteData.getUint32(byteOffset, Endian.little).toDouble(); break;
-          case UsbDataType.float32: val = byteData.getFloat32(byteOffset, Endian.little); break;
+      for (int c = 0; c < channels; c++) {
+        if (c < parsedData[f].length) {
+          series[c].add(parsedData[f][c]);
         }
-        series[c].add(val);
       }
     }
     return series;
   }
 
   void _exportToCsv() async {
-    final rawData = widget.pageState.currentDisplayData;
-    final config = widget.pageState.config;
-    final int wordSize = config.dataType.byteSize;
-    final int frameSize = wordSize * config.channels;
-    final int totalFrames = rawData.length ~/ frameSize;
+    final parsedData = widget.pageState.currentDisplayData;
+    if (parsedData.isEmpty) return;
 
-    if (totalFrames == 0) return;
-
-    final ByteData byteData = ByteData.sublistView(Uint8List.fromList(rawData));
+    int channels = parsedData.first.length;
     final StringBuffer csvContent = StringBuffer();
     
     List<String> headers = ["Frame Index"];
-    for (int c = 0; c < config.channels; c++) {
+    for (int c = 0; c < channels; c++) {
       headers.add("Channel ${c + 1}");
     }
     csvContent.writeln(headers.join(","));
 
-    for (int f = 0; f < totalFrames; f++) {
+    for (int f = 0; f < parsedData.length; f++) {
       List<String> row = ["${f + 1}"];
-      final int frameOffset = f * frameSize;
-      
-      for (int c = 0; c < config.channels; c++) {
-        final int byteOffset = frameOffset + (c * wordSize);
-        dynamic val = 0;
-        switch (config.dataType) {
-          case UsbDataType.int8: val = byteData.getInt8(byteOffset); break;
-          case UsbDataType.uint8: val = byteData.getUint8(byteOffset); break;
-          case UsbDataType.int16: val = byteData.getInt16(byteOffset, Endian.little); break;
-          case UsbDataType.uint16: val = byteData.getUint16(byteOffset, Endian.little); break;
-          case UsbDataType.int32: val = byteData.getInt32(byteOffset, Endian.little); break;
-          case UsbDataType.uint32: val = byteData.getUint32(byteOffset, Endian.little); break;
-          case UsbDataType.float32: val = byteData.getFloat32(byteOffset, Endian.little); break;
+      for (int c = 0; c < channels; c++) {
+        if (c < parsedData[f].length) {
+          row.add(parsedData[f][c].toString());
         }
-        row.add(val.toString());
       }
       csvContent.writeln(row.join(","));
-    }
-
-    String? outputFile = await FilePicker.platform.saveFile(
-      dialogTitle: '请选择 CSV 报告导出路径',
-      fileName: 'serial_monitor_export_${DateTime.now().millisecondsSinceEpoch}.csv',
-      type: Platform.isAndroid ? FileType.any : FileType.custom,
-      allowedExtensions: Platform.isAndroid ? null : ['csv'],
-    );
-
-    if (outputFile != null) {
-      try {
-        final file = File(outputFile);
-        await file.writeAsString(csvContent.toString());
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text("导出成功！文件已保存至:\n$outputFile"),
-            backgroundColor: Colors.green,
-          ));
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text("文件写入失败: $e"),
-            backgroundColor: Colors.redAccent,
-          ));
-        }
-      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final rawData = widget.pageState.currentDisplayData;
-    final targetByteLength = widget.pageState.config.targetByteLength;
-    final isCompleted = rawData.length >= targetByteLength;
+    final parsedData = widget.pageState.currentDisplayData;
+    // 预期总帧数
+    final int targetFrames = widget.pageState.config.totalExpectedFrames; 
+    final isCompleted = targetFrames > 0 && parsedData.length >= targetFrames;
     
-    final double progress = (targetByteLength == 0) 
+    // 进度条按帧数计算
+    final double progress = (targetFrames == 0) 
         ? 0.0 
-        : (rawData.length / targetByteLength).clamp(0.0, 1.0);
+        : (parsedData.length / targetFrames).clamp(0.0, 1.0);
 
     final Widget formConfigSection = Form(
       key: _formKey,
@@ -510,6 +510,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
                   dataBits: _dataBits,
                   stopBits: _stopBits,
                   parity: _parity,
+                  txProtocol: widget.pageState.config.txProtocol,
                 );
                 widget.onSend(config);
               }
@@ -575,8 +576,8 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
               Expanded(
                 child: Text(
                   isCompleted 
-                      ? "本次数据已收齐 (${rawData.length} Bytes)" 
-                      : "正在接收数据 (${rawData.length} / $targetByteLength Bytes)",
+                      ? "本次数据已收齐 (${parsedData.length} Frames)" 
+                      : "正在接收数据 (${parsedData.length} / $targetFrames Frames)",
                   style: TextStyle(
                     fontSize: 14, 
                     fontWeight: FontWeight.bold,
@@ -602,7 +603,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
                     height: double.infinity,
                     child: SingleChildScrollView(
                       child: Text(
-                        _buildChannelDisplay(Uint8List.fromList(rawData), widget.pageState.config),
+                        _buildChannelDisplay(parsedData), 
                         style: const TextStyle(fontFamily: 'monospace', fontSize: 13, color: Colors.blueGrey),
                       ),
                     ),
@@ -617,7 +618,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
                     width: double.infinity,
                     height: double.infinity,
                     child: _ChannelChart(
-                      series: _parseChartData(Uint8List.fromList(rawData), widget.pageState.config),
+                      series: _parseChartData(parsedData),
                     ),
                   ),
                 ),
