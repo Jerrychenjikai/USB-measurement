@@ -7,10 +7,10 @@ import 'package:flutter_speed_dial/flutter_speed_dial.dart';
 
 import 'package:usb_measurement/scan_function.dart'; 
 import 'package:usb_measurement/template.dart';
-import 'package:usb_measurement/receive_data_func.dart'; // 引入已分离的状态机与逻辑
+import 'package:usb_measurement/receive_data_func.dart'; 
 import 'package:usb_measurement/custom_protocol.dart';
 import 'package:usb_measurement/custom_rx_protocol.dart';
-import 'package:usb_measurement/basic_func.dart';
+import 'package:usb_measurement/basic_func.dart'; // 确保该文件导出了分平台的 lowLevelExportCsv 
 
 // ==========================================
 // 3. 页面主体渲染及交互视图
@@ -25,6 +25,16 @@ class SerialMonitorPage extends ConsumerWidget {
     final pageState = ref.watch(serialPageProvider(device));
     final notifier = ref.read(serialPageProvider(device).notifier);
 
+    // 1. 在上层提取并判定数据是否已完整收齐
+    final parsedData = pageState.currentDisplayData;
+    final int targetFrames = pageState.config.totalExpectedFrames; 
+    final bool isCompleted = targetFrames > 0 && parsedData.length >= targetFrames;
+
+    // 2. 重新配置 FAB 的出现逻辑：
+    // 当断开连接时可见；或者在 active 正在采集状态下，只要“数据收齐了”便重新露面 (即：只在数据没收齐时消失)
+    final bool showFab = pageState.status == SerialStatus.disconnected || 
+        (pageState.status == SerialStatus.active && isCompleted);
+
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
@@ -34,7 +44,7 @@ class SerialMonitorPage extends ConsumerWidget {
         duration: const Duration(milliseconds: 200),
         child: _buildStateView(context, pageState, notifier),
       ),
-      floatingActionButton: pageState.status == SerialStatus.disconnected
+      floatingActionButton: showFab
           ? SpeedDial(
               child: const Icon(Icons.keyboard_arrow_up),
               closeManually: false,
@@ -52,7 +62,6 @@ class SerialMonitorPage extends ConsumerWidget {
                   foregroundColor: Colors.black,
                   label: "配置TX协议 (${pageState.config.txProtocol.items.length})",
                   onTap: () async {
-                    // 呼出上一步在 custom_protocol.dart 中编写的配置弹窗
                     final CustomTxProtocol? updatedProtocol = await showDialog<CustomTxProtocol>(
                       context: context,
                       builder: (context) => ProtocolConfigDialog(
@@ -60,11 +69,8 @@ class SerialMonitorPage extends ConsumerWidget {
                       ),
                     );
 
-                    // 如果用户点击了弹窗的“完成”并回传了新协议，则将其更新到状态机中
                     if (updatedProtocol != null) {
                       final newConfig = pageState.config.copyWith(txProtocol: updatedProtocol);
-                      
-                      // 调用 notifier 仅更新配置，不发送控制指令（因为此时可能还没连接硬件）
                       notifier.updateConfigWithoutSending(newConfig);
                     }
                   },
@@ -75,21 +81,17 @@ class SerialMonitorPage extends ConsumerWidget {
                   foregroundColor: Colors.black,
                   label: '配置RX协议',
                   onTap: () async {
-                    // 1. 弹出右侧/中央的协议配置窗口，并将当前状态里已有的 rxProtocol 传进去作为初始值
                     final CustomRxProtocol? result = await showDialog<CustomRxProtocol>(
                       context: context,
-                      barrierDismissible: false, // 强制用户必须点击保存或取消
+                      barrierDismissible: false,
                       builder: (context) => RxProtocolDialog(
                         initialProtocol: pageState.rxProtocol, 
                       ),
                     );
 
-                    // 2. 如果用户点击了“保存应用”并返回了有效的协议对象
                     if (result != null && context.mounted) {
-                      // 3. 调用 notifier 的方法，将新的接收协议更新到 Riverpod 状态机中
                       notifier.updateRxProtocol(result);
 
-                      // 4. 气泡提示配置成功
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text("RX 接收协议应用成功！数据流将按新规则解析。"),
@@ -101,7 +103,7 @@ class SerialMonitorPage extends ConsumerWidget {
                 ),
               ],
             )
-          : null, // 当处于 active(正在采集) 或 connecting 状态时，隐藏按钮防误触
+          : null, // 当处于 connecting 状态，或 active 且数据传输中(未完结)时，隐藏按钮
     );
   }
 
@@ -151,7 +153,6 @@ class _ConnectingView extends StatelessWidget {
   }
 }
 
-// 补充：连接断开/失败视图
 class _DisconnectedView extends StatelessWidget {
   final String errorMessage;
   final VoidCallback onRetry;
@@ -267,7 +268,6 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
     for (int f = startFrame; f < totalFrames; f++) {
       sb.write("${f + 1}".padRight(8));
       for (int c = 0; c < channels; c++) {
-        // 防止由于协议配置通道数和实际解包通道数不一致导致的越界
         if (c < parsedData[f].length) {
           sb.write(parsedData[f][c].toStringAsFixed(4).padRight(14));
         } else {
@@ -304,6 +304,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
     return series;
   }
 
+  // 补全跨平台文件保存逻辑
   void _exportToCsv() async {
     final parsedData = widget.pageState.currentDisplayData;
     if (parsedData.isEmpty) return;
@@ -326,16 +327,29 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
       }
       csvContent.writeln(row.join(","));
     }
+
+    // 拼装默认的文件名
+    final String fileName = "serial_data_${DateTime.now().millisecondsSinceEpoch}.csv";
+    
+    // 调用在 basic_func 分平台重写的统一接口
+    final bool success = await lowLevelExportCsv(
+      defaultFileName: fileName,
+      content: csvContent.toString(),
+    );
+
+    if (success && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("CSV 数据导出流调起/保存成功！")),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final parsedData = widget.pageState.currentDisplayData;
-    // 预期总帧数
     final int targetFrames = widget.pageState.config.totalExpectedFrames; 
     final isCompleted = targetFrames > 0 && parsedData.length >= targetFrames;
     
-    // 进度条按帧数计算
     final double progress = (targetFrames == 0) 
         ? 0.0 
         : (parsedData.length / targetFrames).clamp(0.0, 1.0);
@@ -348,7 +362,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
           Row(
             children: const [
               Icon(Icons.settings_input_component, color: Colors.deepPurple),
-              SizedBox(width: 8),
+              SizedBox(width: 8), // 👈 改成这样
               Text("通信参数配置", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             ],
           ),

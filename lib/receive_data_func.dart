@@ -146,20 +146,34 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
     Future.microtask(() => connectDevice());
 
     return SerialPageState(
-      status: SerialStatus.connecting,
       device: arg,
-      currentDisplayData: const [],
+      status: SerialStatus.disconnected,
       config: ProtocolConfig(
-        sps: 100,
+        sps: 1000,
         duration: 10,
-        dataType: UsbDataType.float32,
-        channels: 1,
+        dataType: UsbDataType.float32, // 默认数据类型
+        channels: 3,                   // 默认 3 通道
         baudRate: 115200,
         dataBits: 8,
         stopBits: 1,
         parity: 0,
-        txProtocol: CustomTxProtocol(items: []), // 确保传入一个初始TX协议实例
+        txProtocol: CustomTxProtocol(items: []),
       ),
+      rxProtocol: CustomRxProtocol(
+        header: null,
+        tail: null,
+        isLengthFixed: true,
+        fixedLength: 12,
+        checksumType: ChecksumType.none,
+        checksumOffset: 0,
+        checksumRef: OffsetReference.fromHeader,
+        items: [
+          RxProtocolItem(name: "ch1", type: UsbDataType.float32, offset: 0),
+          RxProtocolItem(name: "ch2", type: UsbDataType.float32, offset: 4),
+          RxProtocolItem(name: "ch3", type: UsbDataType.float32, offset: 8),
+        ],
+      ),
+      currentDisplayData: [[], [], []], // 对应 3 个通道的历史数据初始化
     );
   }
 

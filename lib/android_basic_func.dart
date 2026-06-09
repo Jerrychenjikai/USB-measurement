@@ -1,7 +1,10 @@
 // android_basic_func.dart
 import 'dart:async';
+import 'dart:io'; // 引入以支持 File 操作
 import 'dart:typed_data';
 import 'package:usb_serial/usb_serial.dart';
+import 'package:path_provider/path_provider.dart'; // 用于获取安卓临时目录
+import 'package:share_plus/share_plus.dart';         // 用于触发安卓原生分享面板
 
 /// 统一的串行设备模型
 class MySerialDevice {
@@ -121,5 +124,31 @@ class LowLevelSerialPort {
   /// 供外部监听的数据流
   Stream<Uint8List> get listenStream {
     return _streamController?.stream ?? const Stream.empty();
+  }
+}
+
+/// 统一的跨平台 CSV 导出函数 (Android 平台实现)
+/// 先将文本写入缓存，随后直接拉起安卓系统级分享面板
+Future<bool> lowLevelExportCsv({
+  required String defaultFileName,
+  required String content,
+}) async {
+  try {
+    // 获取安卓应用临时缓存目录
+    final directory = await getTemporaryDirectory();
+    final file = File('${directory.path}/$defaultFileName');
+    
+    // 写入文件
+    await file.writeAsString(content);
+    
+    // 唤起安卓系统的原生分享面板
+    await Share.shareXFiles(
+      [XFile(file.path)], 
+      text: '串口采集数据导出: $defaultFileName',
+    );
+    return true;
+  } catch (e) {
+    print("Android 导出并分享文件失败: $e");
+    return false;
   }
 }

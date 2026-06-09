@@ -1,7 +1,9 @@
 // desktop_basic_func.dart
 import 'dart:async';
+import 'dart:io'; // 引入以支持 File 操作
 import 'dart:typed_data';
 import 'package:flutter_libserialport/flutter_libserialport.dart';
+import 'package:file_picker/file_picker.dart'; // 桌面端使用文件选择器保存
 
 /// 统一的串行设备模型 (与 Android 端完全同构)
 class MySerialDevice {
@@ -126,4 +128,28 @@ class LowLevelSerialPort {
   Stream<Uint8List> get listenStream {
     return _streamController?.stream ?? const Stream.empty();
   }
+}
+
+/// 统一的跨平台 CSV 导出函数 (Desktop 平台实现)
+/// 弹出桌面系统原生的保存对话框，由用户选择路径保存
+Future<bool> lowLevelExportCsv({
+  required String defaultFileName,
+  required String content,
+}) async {
+  try {
+    String? outputFile = await FilePicker.platform.saveFile(
+      dialogTitle: '选择 CSV 文件的保存路径',
+      fileName: defaultFileName,
+      type: FileType.custom,
+      allowedExtensions: ['csv'],
+    );
+    if (outputFile != null) {
+      final file = File(outputFile);
+      await file.writeAsString(content);
+      return true;
+    }
+  } catch (e) {
+    print("Desktop 保存文件失败: $e");
+  }
+  return false;
 }
