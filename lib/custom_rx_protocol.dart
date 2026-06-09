@@ -297,13 +297,20 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
                                   ),
                                 ),
                                 if (item.type.byteSize > 1)
-                                  IconButton(
-                                    icon: Icon(item.isBigEndian ? Icons.arrow_downward : Icons.arrow_upward, size: 18),
-                                    tooltip: item.isBigEndian ? "大端序(MSB)" : "小端序(LSB)",
+                                  TextButton(
                                     onPressed: () {
                                       setState(() => item.isBigEndian = !item.isBigEndian);
                                     },
-                                  ),
+                                    style: TextButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                      minimumSize: Size.zero, // 移除最小尺寸限制
+                                      tapTargetSize: MaterialTapTargetSize.shrinkWrap, // 减小点击区域
+                                    ),
+                                    child: Text(
+                                      item.isBigEndian ? "MSB" : "LSB",
+                                      style: const TextStyle(fontSize: 14),
+                                    ),
+                                  )
                               ],
                             ),
                             Row(
