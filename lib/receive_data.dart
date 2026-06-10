@@ -310,7 +310,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
     
     List<String> headers = ["Frame Index"];
     for (int c = 0; c < channels; c++) {
-      headers.add("Channel ${c + 1}");
+      headers.add(widget.pageState.rxProtocol!.items[c].name);
     }
     csvContent.writeln(headers.join(","));
 
