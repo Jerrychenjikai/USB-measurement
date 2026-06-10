@@ -253,7 +253,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
 
     sb.write("Frame".padRight(8));
     for (int c = 0; c < channels; c++) {
-      sb.write("CH${c + 1}".padRight(14));
+      sb.write(widget.pageState.rxProtocol!.items[c].name.padRight(14));
     }
     sb.writeln();
     sb.writeln("-" * (8 + 14 * channels));
@@ -592,6 +592,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
                     height: double.infinity,
                     child: _ChannelChart(
                       series: _parseChartData(parsedData),
+                      pageState: widget.pageState,
                     ),
                   ),
                 ),
@@ -648,7 +649,8 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
 
 class _ChannelChart extends StatelessWidget {
   final List<List<double>> series;
-  const _ChannelChart({required this.series});
+  final SerialPageState pageState;
+  const _ChannelChart({required this.series, required this.pageState});
 
   static const List<Color> channelColors = [
     Colors.red,
@@ -705,7 +707,7 @@ class _ChannelChart extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 4),
-                Text("CH${index + 1}", style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                Text(pageState.rxProtocol!.items[index].name, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
               ],
             );
           }),
