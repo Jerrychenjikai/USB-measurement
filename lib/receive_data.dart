@@ -568,19 +568,19 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
           Row(
             children: [
               Icon(
-                isCompleted ? Icons.check_circle : Icons.sync,
-                color: isCompleted ? Colors.green : Colors.amber,
+                isCompleted && widget.pageState.hasSentCommand ? Icons.check_circle : Icons.sync,
+                color: isCompleted && widget.pageState.hasSentCommand ? Colors.green : Colors.amber,
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  isCompleted 
+                  isCompleted && widget.pageState.hasSentCommand
                       ? "本次数据已收齐 (${parsedData.length} Frames)" 
-                      : "正在接收数据 (${parsedData.length} / $targetFrames Frames)",
+                      : "正在接收数据 (${parsedData.length} Frames)",
                   style: TextStyle(
                     fontSize: 14, 
                     fontWeight: FontWeight.bold,
-                    color: isCompleted ? Colors.green : Colors.amber.shade800
+                    color: isCompleted && widget.pageState.hasSentCommand ? Colors.green : Colors.amber.shade800
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -626,36 +626,38 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
             ),
           ),
           
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Text(
-                "接收进度:",
-                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey.shade700),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: LinearProgressIndicator(
-                    value: progress.clamp(0.0, 1.0),
-                    minHeight: 10,
-                    backgroundColor: Colors.grey.shade300,
-                    color: isCompleted ? Colors.green : Colors.deepPurple,
+          if(widget.pageState.hasSentCommand) 
+            ...[const SizedBox(height: 16),
+              Row(
+                children: [
+                  Text(
+                    "接收进度:",
+                    style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey.shade700),
                   ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              SizedBox(
-                width: 48,
-                child: Text(
-                  "${(progress * 100).toStringAsFixed(1)}%",
-                  textAlign: TextAlign.right,
-                  style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold),
-                ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: LinearProgressIndicator(
+                        value: progress.clamp(0.0, 1.0),
+                        minHeight: 10,
+                        backgroundColor: Colors.grey.shade300,
+                        color: isCompleted ? Colors.green : Colors.deepPurple,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  SizedBox(
+                    width: 48,
+                    child: Text(
+                      "${(progress * 100).toStringAsFixed(1)}%",
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
               ),
             ],
-          ),
         ],
       ),
     );

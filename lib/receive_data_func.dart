@@ -80,12 +80,14 @@ class SerialPageState {
   final List<List<double>> currentDisplayData; 
   final String? errorMessage;
   final CustomRxProtocol? rxProtocol; 
+  final bool hasSentCommand;
 
   SerialPageState({
     required this.device,
     required this.status,
     required this.config,
     required this.currentDisplayData,
+    required this.hasSentCommand,
     this.errorMessage,
     this.rxProtocol,
   });
@@ -97,6 +99,7 @@ class SerialPageState {
     List<List<double>>? currentDisplayData,
     String? errorMessage,
     CustomRxProtocol? rxProtocol, // 新增
+    bool? hasSentCommand,
   }) {
     return SerialPageState(
       device: device ?? this.device,
@@ -105,6 +108,7 @@ class SerialPageState {
       currentDisplayData: currentDisplayData ?? this.currentDisplayData,
       errorMessage: errorMessage ?? this.errorMessage,
       rxProtocol: rxProtocol ?? this.rxProtocol, // 新增
+      hasSentCommand: hasSentCommand ?? this.hasSentCommand,
     );
   }
 }
@@ -152,6 +156,7 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
         ],
       ),
       currentDisplayData: [[], [], []], // 对应 3 个通道的历史数据初始化
+      hasSentCommand: false,
     );
   }
 
@@ -236,7 +241,7 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
       );
 
       clearReceiveData();
-      state = state.copyWith(config: config);
+      state = state.copyWith(config: config, hasSentCommand: true);
 
       // 2. 将协议层的控制指令转化为字节并下发
       final cmd = Uint8List.fromList(config.controlBytes);
@@ -263,14 +268,14 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
 
   // 【新增方法1】仅更新配置不发送指令（用于配置TX）
   void updateConfigWithoutSending(ProtocolConfig newConfig) {
-    state = state.copyWith(config: newConfig);
+    state = state.copyWith(config: newConfig, hasSentCommand: false);
     clearReceiveData();
   }
 
   // 【新增方法2】更新RX接收协议
   void updateRxProtocol(CustomRxProtocol protocol) {
     // 同时把协议更新到 config 和外层的 rxProtocol 中
-    state = state.copyWith(rxProtocol: protocol);
+    state = state.copyWith(rxProtocol: protocol, hasSentCommand: false);
     clearReceiveData();
   }
 
