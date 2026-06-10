@@ -135,7 +135,7 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
         dataBits: 8,
         stopBits: 1,
         parity: 0,
-        txProtocol: CustomTxProtocol(items: []),
+        txProtocol: CustomTxProtocol.createDefault(),
       ),
       rxProtocol: CustomRxProtocol(
         header: null,
@@ -235,8 +235,8 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
         parity: config.parity,
       );
 
-      _buffer.clear();
-      state = state.copyWith(config: config, currentDisplayData: []);
+      clearReceiveData();
+      state = state.copyWith(config: config);
 
       // 2. 将协议层的控制指令转化为字节并下发
       final cmd = Uint8List.fromList(config.controlBytes);
@@ -256,15 +256,22 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
     state = state.copyWith(status: SerialStatus.disconnected, errorMessage: "用户手动断开连接");
   }
 
+  void clearReceiveData() {
+    _buffer.clear();
+    state = state.copyWith(currentDisplayData: []);
+  }
+
   // 【新增方法1】仅更新配置不发送指令（用于配置TX）
   void updateConfigWithoutSending(ProtocolConfig newConfig) {
     state = state.copyWith(config: newConfig);
+    clearReceiveData();
   }
 
   // 【新增方法2】更新RX接收协议
   void updateRxProtocol(CustomRxProtocol protocol) {
     // 同时把协议更新到 config 和外层的 rxProtocol 中
     state = state.copyWith(rxProtocol: protocol);
+    clearReceiveData();
   }
 
   void _handleIncomingData(List<int> data) {

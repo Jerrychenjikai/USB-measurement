@@ -282,7 +282,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
     
     final double progress = (targetFrames == 0) 
         ? 0.0 
-        : (parsedData.length / targetFrames).clamp(0.0, 1.0);
+        : (parsedData.length / targetFrames);
 
     // 计算 Drawer 宽度
     double screenWidth = MediaQuery.of(context).size.width;
@@ -407,6 +407,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
               if (_formKey.currentState?.validate() ?? false) {
                 final parsedSps = int.parse(_spsController.text.trim());
                 final parsedDur = int.parse(_durationController.text.trim());
+
                 if (parsedSps * parsedDur > 1000000) {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                     content: Text("警告：预估数据量超过一百万点，易导致内存溢出闪退，请调小参数！"),
@@ -463,7 +464,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: isCompleted ? () async {
+              onPressed: () async {
                 final CustomTxProtocol? updatedProtocol = await showDialog<CustomTxProtocol>(
                   context: context,
                   builder: (context) => ProtocolConfigDialog(
@@ -474,7 +475,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
                   final newConfig = widget.pageState.config.copyWith(txProtocol: updatedProtocol);
                   ref.read(serialPageProvider(widget.pageState.device).notifier).updateConfigWithoutSending(newConfig);
                 }
-              } : null,
+              },
               icon: const Icon(Icons.upload),
               label: Text("配置TX协议 (${widget.pageState.config.txProtocol.items.length})"),
               style: ElevatedButton.styleFrom(
@@ -488,7 +489,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: isCompleted ? () async {
+              onPressed: () async {
                 final CustomRxProtocol? result = await showDialog<CustomRxProtocol>(
                   context: context,
                   barrierDismissible: false,
@@ -505,7 +506,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
                     ),
                   );
                 }
-              } : null,
+              },
               icon: const Icon(Icons.download),
               label: const Text('配置RX协议'),
               style: ElevatedButton.styleFrom(
@@ -513,6 +514,21 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
                 backgroundColor: Theme.of(context).colorScheme.surfaceContainerLow,
                 foregroundColor: Colors.black,
               ),
+            ),
+          ),
+
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () {
+                ref.read(serialPageProvider(widget.pageState.device).notifier).clearReceiveData();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("已清空当前显示数据")),
+                );
+              },
+              icon: const Icon(Icons.clear_all),
+              label: const Text("清空当前显示数据"),
             ),
           ),
           
@@ -532,9 +548,9 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: isCompleted ? _exportToCsv : null,
+              onPressed: _exportToCsv,
               icon: const Icon(Icons.download),
-              label: Text(isCompleted ? "选择目录并导出 CSV" : "请等待数据接收完毕"),
+              label: Text("选择目录并导出 CSV"),
               style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16),
               ),
@@ -622,7 +638,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(8),
                   child: LinearProgressIndicator(
-                    value: progress,
+                    value: progress.clamp(0.0, 1.0),
                     minHeight: 10,
                     backgroundColor: Colors.grey.shade300,
                     color: isCompleted ? Colors.green : Colors.deepPurple,
