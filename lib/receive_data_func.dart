@@ -268,13 +268,13 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
 
   // 【新增方法1】仅更新配置不发送指令（用于配置TX）
   void updateConfigWithoutSending(ProtocolConfig newConfig) {
-    state = state.copyWith(config: newConfig, hasSentCommand: false);
-    clearReceiveData();
+    state = state.copyWith(config: newConfig);
   }
 
   // 【新增方法2】更新RX接收协议
   void updateRxProtocol(CustomRxProtocol protocol) {
     // 同时把协议更新到 config 和外层的 rxProtocol 中
+    // 由于整个接受逻辑变了，需要重置所有状态
     state = state.copyWith(rxProtocol: protocol, hasSentCommand: false);
     clearReceiveData();
   }
