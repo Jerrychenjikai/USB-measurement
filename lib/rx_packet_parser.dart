@@ -187,7 +187,7 @@ class RxPacketParser {
         }
         parsedRecord.add(_readFromByteData(dataView, baseOffset, item.type, item.isBigEndian));
       } else {
-        // 核心亮点：如果是变长段下的可重复变量，其吸纳范围是除去所有已知固定开销后的剩余全部空间
+        // 如果是变长段下的可重复变量，其吸纳范围是除去所有已知固定开销后的剩余全部空间
         int currentPos = baseOffset;
         int elementSize = item.type.byteSize;
         
