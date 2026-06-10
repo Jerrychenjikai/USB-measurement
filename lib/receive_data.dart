@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart'; 
-import 'package:flutter_speed_dial/flutter_speed_dial.dart';
 
 import 'package:usb_measurement/scan_function.dart'; 
 import 'package:usb_measurement/template.dart';
@@ -25,85 +24,9 @@ class SerialMonitorPage extends ConsumerWidget {
     final pageState = ref.watch(serialPageProvider(device));
     final notifier = ref.read(serialPageProvider(device).notifier);
 
-    // 1. 在上层提取并判定数据是否已完整收齐
-    final parsedData = pageState.currentDisplayData;
-    final int targetFrames = pageState.config.totalExpectedFrames; 
-    final bool isCompleted = targetFrames > 0 && parsedData.length >= targetFrames;
-
-    // 2. 重新配置 FAB 的出现逻辑：
-    // 当断开连接时可见；或者在 active 正在采集状态下，只要“数据收齐了”便重新露面 (即：只在数据没收齐时消失)
-    final bool showFab = pageState.status == SerialStatus.disconnected || 
-        (pageState.status == SerialStatus.active && isCompleted);
-
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: Text("监测: ${pageState.device.name} | (Build 20260608)"),
-      ),
-      body: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 200),
-        child: _buildStateView(context, pageState, notifier),
-      ),
-      floatingActionButton: showFab
-          ? SpeedDial(
-              child: const Icon(Icons.keyboard_arrow_up),
-              closeManually: false,
-              activeChild: const Icon(Icons.close),
-              direction: SpeedDialDirection.up,
-              animationCurve: Curves.easeInOutCubic,
-              overlayColor: Theme.of(context).colorScheme.secondary,
-              overlayOpacity: 0.4,
-              spacing: 8,
-              spaceBetweenChildren: 12,
-              children: [
-                SpeedDialChild(
-                  child: const Icon(Icons.settings_ethernet),
-                  backgroundColor: Theme.of(context).colorScheme.surfaceContainerLow,
-                  foregroundColor: Colors.black,
-                  label: "配置TX协议 (${pageState.config.txProtocol.items.length})",
-                  onTap: () async {
-                    final CustomTxProtocol? updatedProtocol = await showDialog<CustomTxProtocol>(
-                      context: context,
-                      builder: (context) => ProtocolConfigDialog(
-                        initialProtocol: pageState.config.txProtocol,
-                      ),
-                    );
-
-                    if (updatedProtocol != null) {
-                      final newConfig = pageState.config.copyWith(txProtocol: updatedProtocol);
-                      notifier.updateConfigWithoutSending(newConfig);
-                    }
-                  },
-                ),
-                SpeedDialChild(
-                  child: const Icon(Icons.settings_ethernet),
-                  backgroundColor: Theme.of(context).colorScheme.surfaceContainerLow,
-                  foregroundColor: Colors.black,
-                  label: '配置RX协议',
-                  onTap: () async {
-                    final CustomRxProtocol? result = await showDialog<CustomRxProtocol>(
-                      context: context,
-                      barrierDismissible: false,
-                      builder: (context) => RxProtocolDialog(
-                        initialProtocol: pageState.rxProtocol, 
-                      ),
-                    );
-
-                    if (result != null && context.mounted) {
-                      notifier.updateRxProtocol(result);
-
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text("RX 接收协议应用成功！数据流将按新规则解析。"),
-                          duration: Duration(seconds: 2),
-                        ),
-                      );
-                    }
-                  },
-                ),
-              ],
-            )
-          : null, // 当处于 connecting 状态，或 active 且数据传输中(未完结)时，隐藏按钮
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 200),
+      child: _buildStateView(context, pageState, notifier),
     );
   }
 
@@ -119,6 +42,7 @@ class SerialMonitorPage extends ConsumerWidget {
         );
       case SerialStatus.disconnected:
         return _DisconnectedView(
+          device: pageState.device,
           errorMessage: pageState.errorMessage ?? "",
           onRetry: () => notifier.connectDevice(),
         );
@@ -132,75 +56,88 @@ class _ConnectingView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const CircularProgressIndicator(),
-          const SizedBox(height: 24),
-          Text(
-            "正在尝试与设备建立通信信道...",
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.grey.shade700),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            device.devicePath,
-            style: const TextStyle(fontFamily: 'monospace', color: Colors.grey),
-          ),
-        ],
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        title: Text("监测: ${device.name} | (Build 20260608)"),
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 24),
+            Text(
+              "正在尝试与设备建立通信信道...",
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.grey.shade700),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              device.devicePath,
+              style: const TextStyle(fontFamily: 'monospace', color: Colors.grey),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
 class _DisconnectedView extends StatelessWidget {
+  final MySerialDevice device;
   final String errorMessage;
   final VoidCallback onRetry;
 
-  const _DisconnectedView({required this.errorMessage, required this.onRetry});
+  const _DisconnectedView({required this.device, required this.errorMessage, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(24.0),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.power_off, size: 64, color: Colors.red),
-          const SizedBox(height: 16),
-          const Text("通信链路状态反馈", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          if (errorMessage.isNotEmpty) ...[
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        title: Text("监测: ${device.name} | (Build 20260608)"),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.power_off, size: 64, color: Colors.red),
             const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(8)),
-              child: Text(errorMessage, style: TextStyle(color: Colors.red.shade700, fontSize: 13)),
-            ),
-          ],
-          const SizedBox(height: 40),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              ElevatedButton.icon(
-                onPressed: onRetry, 
-                icon: const Icon(Icons.sync),
-                label: const Text("重新连接"),
-              ),
-              const SizedBox(width: 16),
-              OutlinedButton.icon(
-                onPressed: () => Navigator.of(context).pop(),
-                icon: const Icon(Icons.arrow_back),
-                label: const Text("返回主页"),
+            const Text("通信链路状态反馈", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            if (errorMessage.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(8)),
+                child: Text(errorMessage, style: TextStyle(color: Colors.red.shade700, fontSize: 13)),
               ),
             ],
-          )
-        ],
+            const SizedBox(height: 40),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: onRetry, 
+                  icon: const Icon(Icons.sync),
+                  label: const Text("重新连接"),
+                ),
+                const SizedBox(width: 16),
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.arrow_back),
+                  label: const Text("返回主页"),
+                ),
+              ],
+            )
+          ],
+        ),
       ),
     );
   }
 }
 
-class _ActiveInteractiveView extends StatefulWidget {
+class _ActiveInteractiveView extends ConsumerStatefulWidget {
   final SerialPageState pageState;
   final Function(ProtocolConfig) onSend;
   final VoidCallback onDisconnect;
@@ -213,10 +150,10 @@ class _ActiveInteractiveView extends StatefulWidget {
   });
 
   @override
-  State<_ActiveInteractiveView> createState() => _ActiveInteractiveViewState();
+  ConsumerState<_ActiveInteractiveView> createState() => _ActiveInteractiveViewState();
 }
 
-class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
+class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> {
   final _formKey = GlobalKey<FormState>();
   
   late TextEditingController _spsController;
@@ -300,7 +237,6 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
     return series;
   }
 
-  // 补全跨平台文件保存逻辑
   void _exportToCsv() async {
     final parsedData = widget.pageState.currentDisplayData;
     if (parsedData.isEmpty) return;
@@ -324,10 +260,8 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
       csvContent.writeln(row.join(","));
     }
 
-    // 拼装默认的文件名
     final String fileName = "serial_data_${DateTime.now().millisecondsSinceEpoch}.csv";
     
-    // 调用在 basic_func 分平台重写的统一接口
     final bool success = await lowLevelExportCsv(
       defaultFileName: fileName,
       content: csvContent.toString(),
@@ -350,6 +284,11 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
         ? 0.0 
         : (parsedData.length / targetFrames).clamp(0.0, 1.0);
 
+    // 计算 Drawer 宽度
+    double screenWidth = MediaQuery.of(context).size.width;
+    const double a = 350.0;
+    double drawerWidth = screenWidth < (a / 0.9) ? screenWidth * 0.9 : a;
+
     final Widget formConfigSection = Form(
       key: _formKey,
       child: ListView(
@@ -358,7 +297,7 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
           Row(
             children: const [
               Icon(Icons.settings_input_component, color: Colors.deepPurple),
-              SizedBox(width: 8), // 👈 改成这样
+              SizedBox(width: 8), 
               Text("通信参数配置", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             ],
           ),
@@ -511,6 +450,77 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
           const SizedBox(height: 32),
           const Divider(),
           const SizedBox(height: 8),
+
+          // --- 新增：协议配置区域 ---
+          Row(
+            children: const [
+              Icon(Icons.settings_ethernet, color: Colors.blueGrey),
+              SizedBox(width: 8),
+              Text("协议配置", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: isCompleted ? () async {
+                final CustomTxProtocol? updatedProtocol = await showDialog<CustomTxProtocol>(
+                  context: context,
+                  builder: (context) => ProtocolConfigDialog(
+                    initialProtocol: widget.pageState.config.txProtocol,
+                  ),
+                );
+                if (updatedProtocol != null) {
+                  final newConfig = widget.pageState.config.copyWith(txProtocol: updatedProtocol);
+                  ref.read(serialPageProvider(widget.pageState.device).notifier).updateConfigWithoutSending(newConfig);
+                }
+              } : null,
+              icon: const Icon(Icons.upload),
+              label: Text("配置TX协议 (${widget.pageState.config.txProtocol.items.length})"),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                backgroundColor: Theme.of(context).colorScheme.surfaceContainerLow,
+                foregroundColor: Colors.black,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: isCompleted ? () async {
+                final CustomRxProtocol? result = await showDialog<CustomRxProtocol>(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (context) => RxProtocolDialog(
+                    initialProtocol: widget.pageState.rxProtocol, 
+                  ),
+                );
+                if (result != null && context.mounted) {
+                  ref.read(serialPageProvider(widget.pageState.device).notifier).updateRxProtocol(result);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("RX 接收协议应用成功！数据流将按新规则解析。"),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                }
+              } : null,
+              icon: const Icon(Icons.download),
+              label: const Text('配置RX协议'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                backgroundColor: Theme.of(context).colorScheme.surfaceContainerLow,
+                foregroundColor: Colors.black,
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 32),
+          const Divider(),
+          const SizedBox(height: 8),
+
+          // --- 导出区域 ---
           Row(
             children: const [
               Icon(Icons.save_alt, color: Colors.teal),
@@ -634,11 +644,18 @@ class _ActiveInteractiveViewState extends State<_ActiveInteractiveView> {
       ),
     );
 
-    return ScreenSplitter(
-      defaultSplit: 0.7,   
-      maxSplit: 0.9,       
-      childA: formConfigSection,  
-      childB: dataDisplaySection, 
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        title: Text("监测: ${widget.pageState.device.name} | (Build 20260608)"),
+      ),
+      drawer: Drawer(
+        width: drawerWidth,
+        child: SafeArea(
+          child: formConfigSection,
+        ),
+      ),
+      body: dataDisplaySection,
     );
   }
 }
