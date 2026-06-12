@@ -10,6 +10,8 @@ import 'package:usb_measurement/receive_data_func.dart';
 import 'package:usb_measurement/custom_protocol.dart';
 import 'package:usb_measurement/custom_rx_protocol.dart';
 import 'package:usb_measurement/basic_func.dart'; // 确保该文件导出了分平台的 lowLevelExportCsv 
+import 'package:usb_measurement/protocol_storage.dart';
+import 'package:usb_measurement/saved_protocol_dialog.dart';
 
 // ==========================================
 // 3. 页面主体渲染及交互视图
@@ -39,6 +41,7 @@ class SerialMonitorPage extends ConsumerWidget {
           pageState: pageState,
           onSend: (config) => notifier.sendCommand(config),
           onDisconnect: () => notifier.disconnectDevice(),
+          notifier: notifier,
         );
       case SerialStatus.disconnected:
         return _DisconnectedView(
@@ -141,12 +144,14 @@ class _ActiveInteractiveView extends ConsumerStatefulWidget {
   final SerialPageState pageState;
   final Function(ProtocolConfig) onSend;
   final VoidCallback onDisconnect;
+  final notifier;
 
   const _ActiveInteractiveView({
     super.key,
     required this.pageState,
     required this.onSend,
     required this.onDisconnect,
+    required this.notifier,
   });
 
   @override
@@ -515,6 +520,30 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
                 foregroundColor: Colors.black,
               ),
             ),
+          ),
+
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child:
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blueGrey.shade800,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                ),
+                icon: const Icon(Icons.folder_special),
+                label: const Text("协议预设仓库 (加载/管理)"),
+                onPressed: () {
+                  showDialog(
+                    context: context,
+                    builder: (context) => SavedProtocolsDialog(
+                      notifier: widget.notifier,          // 来自 ref.read(serialPageProvider(device).notifier)
+                      currentConfig: widget.pageState.config, // 来自 ref.watch(serialPageProvider(device)).config
+                    ),
+                  );
+                },
+              ),
           ),
 
           const SizedBox(height: 16),

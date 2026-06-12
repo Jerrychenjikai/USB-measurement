@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:usb_measurement/protocol_storage.dart';
+import 'package:usb_measurement/basic_func.dart';
 
 /// 1. 定义控制指令中变量的类型
 enum TxItemType {
@@ -123,8 +125,7 @@ class _ProtocolConfigDialogState extends State<ProtocolConfigDialog> {
     return AlertDialog(
       title: const Text("配置自定义控制协议 (TX)"),
       content: SizedBox(
-        width: double.maxFinite,
-        height: 350,
+        width: 550, 
         child: _localItems.isEmpty
             ? const Center(child: Text("请点击左下角加号添加协议字段"))
             : ListView.builder(
@@ -229,18 +230,42 @@ class _ProtocolConfigDialogState extends State<ProtocolConfigDialog> {
       // 底部操作区
       actionsPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       actions: [
-        // 左下角：加号按钮
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            ElevatedButton.icon(
-              icon: const Icon(Icons.add),
-              label: const Text("添加字段"),
-              onPressed: () {
-                setState(() {
-                  _localItems.add(TxProtocolItem(type: TxItemType.fixedBytes, length: 1));
-                });
-              },
+            // 左下角：添加字段 与 永久保存 按钮组
+            Wrap(
+              spacing: 8,
+              children: [
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.add),
+                  label: const Text("添加字段"),
+                  onPressed: () {
+                    setState(() {
+                      _localItems.add(TxProtocolItem(type: TxItemType.fixedBytes, length: 1));
+                    });
+                  },
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.teal.shade700, foregroundColor: Colors.white),
+                  icon: const Icon(Icons.save),
+                  label: const Text("永久保存"),
+                  onPressed: () async {
+                    if (_localItems.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("协议内容不能为空")));
+                      return;
+                    }
+                    // 弹出名称输入框
+                    final name = await showNameInputDialog(context, "保存控制协议(TX)");
+                    if (name != null && name.isNotEmpty) {
+                      await ProtocolStorage.saveTxProtocol(name, CustomTxProtocol(items: _localItems));
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("控制协议 '$name' 已长久保存")));
+                      }
+                    }
+                  },
+                ),
+              ],
             ),
             // 右下角：取消与完成
             Row(
@@ -251,10 +276,9 @@ class _ProtocolConfigDialogState extends State<ProtocolConfigDialog> {
                 ),
                 ElevatedButton(
                   onPressed: () {
-                    // 点击完成，向调用者回传组装完成的 CustomTxProtocol 类
                     Navigator.pop(context, CustomTxProtocol(items: _localItems));
                   },
-                  child: const Text("完成"),
+                  child: const Text("应用"),
                 ),
               ],
             )
