@@ -6,8 +6,8 @@ import 'custom_rx_protocol.dart';
 
 class RxPacketParser {
   /// 从底层的环形缓冲区内剥离出合法数据帧并提取多通道数值
-  static List<List<double>> parseStream(Queue<int> buffer, CustomRxProtocol protocol) {
-    List<List<double>> outputFrames = [];
+  static List<List<List<double>>> parseStream(Queue<int> buffer, CustomRxProtocol protocol) {
+    List<List<List<double>>> outputFrames = [];
 
     while (buffer.isNotEmpty) {
       // ==========================================
@@ -169,8 +169,8 @@ class RxPacketParser {
   }
 
   /// 核心解包映射函数：将原始一帧字节切片为用户所期望的浮点型多通道数组
-  static List<double> _extractValues(Uint8List frame, CustomRxProtocol protocol, int frameLen) {
-    List<double> parsedRecord = [];
+  static List<List<double>> _extractValues(Uint8List frame, CustomRxProtocol protocol, int frameLen) {
+    List<List<double>> parsedRecord = [];
     ByteData dataView = ByteData.sublistView(frame);
 
     for (var item in protocol.items) {
@@ -182,10 +182,10 @@ class RxPacketParser {
       if (!item.isRepeatable) {
         // 普通确定性变量提取
         if (baseOffset < 0 || baseOffset + item.type.byteSize > frameLen) {
-          parsedRecord.add(0.0);
+          parsedRecord.add([0.0]);
           continue;
         }
-        parsedRecord.add(_readFromByteData(dataView, baseOffset, item.type, item.isBigEndian));
+        parsedRecord.add([_readFromByteData(dataView, baseOffset, item.type, item.isBigEndian)]);
       } else {
         // 如果是变长段下的可重复变量，其吸纳范围是除去所有已知固定开销后的剩余全部空间
         int currentPos = baseOffset;
@@ -200,10 +200,13 @@ class RxPacketParser {
           endLimit = endLimit - 1; // 扣除倒数校验位占位
         }
 
+        List<double> cache = [];
+
         while (currentPos + elementSize <= endLimit) {
-          parsedRecord.add(_readFromByteData(dataView, currentPos, item.type, item.isBigEndian));
+          cache.add(_readFromByteData(dataView, currentPos, item.type, item.isBigEndian));
           currentPos += elementSize;
         }
+        parsedRecord.add(cache);
       }
     }
     return parsedRecord;

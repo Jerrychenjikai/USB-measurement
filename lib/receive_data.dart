@@ -182,7 +182,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
     super.dispose();
   }
 
-  String _buildChannelDisplay(List<List<double>> parsedData) {
+  String _buildChannelDisplay(List<List<List<double>>> parsedData) {
     if (parsedData.isEmpty) return "等待数据流输入...";
     
     final StringBuffer sb = StringBuffer();
@@ -202,7 +202,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
       sb.write("${f + 1}".padRight(8));
       for (int c = 0; c < channels; c++) {
         if (c < parsedData[f].length) {
-          sb.write(parsedData[f][c].toStringAsFixed(4).padRight(14));
+          sb.write(parsedData[f][c][0].toStringAsFixed(4).padRight(14));
         } else {
           sb.write("N/A".padRight(14));
         }
@@ -216,7 +216,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
     return sb.toString();
   }
 
-  List<List<double>> _parseChartData(List<List<double>> parsedData) {
+  List<List<double>> _parseChartData(List<List<List<double>>> parsedData) {
     if (parsedData.isEmpty) return [];
     
     int channels = parsedData.first.length;
@@ -230,7 +230,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
     for (int f = 0; f < totalFrames; f += step) {
       for (int c = 0; c < channels; c++) {
         if (c < parsedData[f].length) {
-          series[c].add(parsedData[f][c]);
+          series[c].add(parsedData[f][c][0]);
         }
       }
     }
@@ -254,7 +254,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
       List<String> row = ["${f + 1}"];
       for (int c = 0; c < channels; c++) {
         if (c < parsedData[f].length) {
-          row.add(parsedData[f][c].toString());
+          row.add(parsedData[f][c].length == 1 ? parsedData[f][c][0].toString() : parsedData[f][c].toString());
         }
       }
       csvContent.writeln(row.join(","));
