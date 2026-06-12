@@ -1,6 +1,7 @@
 // rx_packet_parser.dart
 import 'dart:collection';
 import 'dart:typed_data';
+import 'dart:math';
 import 'package:usb_measurement/basic_func.dart';
 import 'custom_rx_protocol.dart';
 
@@ -193,11 +194,20 @@ class RxPacketParser {
         
         // 结束边界取决于是否有帧尾或者限制
         int endLimit = frameLen;
-        if (protocol.tail != null) {
+
+         if (protocol.tail != null) {
           endLimit = frameLen - protocol.tail!.length;
         }
         if (protocol.checksumType != ChecksumType.none && protocol.checksumRef == OffsetReference.fromTail) {
           endLimit = endLimit - 1; // 扣除倒数校验位占位
+        }
+
+        for (var i in protocol.items){
+          int calibrated_offset = i.reference == OffsetReference.fromHeader 
+                                  ? i.offset 
+                                  : frameLen + i.offset;
+                                  
+          if(calibrated_offset-1 > currentPos) endLimit = min(endLimit, calibrated_offset-1);
         }
 
         List<double> cache = [];
