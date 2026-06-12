@@ -10,6 +10,8 @@ import 'package:usb_measurement/receive_data_func.dart';
 import 'package:usb_measurement/custom_protocol.dart';
 import 'package:usb_measurement/custom_rx_protocol.dart';
 import 'package:usb_measurement/basic_func.dart'; // 确保该文件导出了分平台的 lowLevelExportCsv 
+import 'package:usb_measurement/protocol_storage.dart';
+import 'package:usb_measurement/saved_protocol_dialog.dart';
 
 // ==========================================
 // 3. 页面主体渲染及交互视图
@@ -39,6 +41,7 @@ class SerialMonitorPage extends ConsumerWidget {
           pageState: pageState,
           onSend: (config) => notifier.sendCommand(config),
           onDisconnect: () => notifier.disconnectDevice(),
+          notifier: notifier,
         );
       case SerialStatus.disconnected:
         return _DisconnectedView(
@@ -141,12 +144,14 @@ class _ActiveInteractiveView extends ConsumerStatefulWidget {
   final SerialPageState pageState;
   final Function(ProtocolConfig) onSend;
   final VoidCallback onDisconnect;
+  final notifier;
 
   const _ActiveInteractiveView({
     super.key,
     required this.pageState,
     required this.onSend,
     required this.onDisconnect,
+    required this.notifier,
   });
 
   @override
@@ -182,7 +187,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
     super.dispose();
   }
 
-  String _buildChannelDisplay(List<List<double>> parsedData) {
+  String _buildChannelDisplay(List<List<List<double>>> parsedData) {
     if (parsedData.isEmpty) return "等待数据流输入...";
     
     final StringBuffer sb = StringBuffer();
@@ -202,7 +207,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
       sb.write("${f + 1}".padRight(8));
       for (int c = 0; c < channels; c++) {
         if (c < parsedData[f].length) {
-          sb.write(parsedData[f][c].toStringAsFixed(4).padRight(14));
+          sb.write(parsedData[f][c][0].toStringAsFixed(4).padRight(14));
         } else {
           sb.write("N/A".padRight(14));
         }
@@ -216,7 +221,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
     return sb.toString();
   }
 
-  List<List<double>> _parseChartData(List<List<double>> parsedData) {
+  List<List<double>> _parseChartData(List<List<List<double>>> parsedData) {
     if (parsedData.isEmpty) return [];
     
     int channels = parsedData.first.length;
@@ -230,7 +235,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
     for (int f = 0; f < totalFrames; f += step) {
       for (int c = 0; c < channels; c++) {
         if (c < parsedData[f].length) {
-          series[c].add(parsedData[f][c]);
+          series[c].add(parsedData[f][c][0]);
         }
       }
     }
@@ -254,7 +259,7 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
       List<String> row = ["${f + 1}"];
       for (int c = 0; c < channels; c++) {
         if (c < parsedData[f].length) {
-          row.add(parsedData[f][c].toString());
+          row.add(parsedData[f][c].length == 1 ? parsedData[f][c][0].toString() : parsedData[f][c].toString());
         }
       }
       csvContent.writeln(row.join(","));
@@ -515,6 +520,30 @@ class _ActiveInteractiveViewState extends ConsumerState<_ActiveInteractiveView> 
                 foregroundColor: Colors.black,
               ),
             ),
+          ),
+
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child:
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blueGrey.shade800,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                ),
+                icon: const Icon(Icons.folder_special),
+                label: const Text("协议预设仓库 (加载/管理)"),
+                onPressed: () {
+                  showDialog(
+                    context: context,
+                    builder: (context) => SavedProtocolsDialog(
+                      notifier: widget.notifier,          // 来自 ref.read(serialPageProvider(device).notifier)
+                      currentConfig: widget.pageState.config, // 来自 ref.watch(serialPageProvider(device)).config
+                    ),
+                  );
+                },
+              ),
           ),
 
           const SizedBox(height: 16),

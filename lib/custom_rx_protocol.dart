@@ -2,6 +2,7 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:usb_measurement/basic_func.dart'; // 引入 UsbDataType
+import 'package:usb_measurement/protocol_storage.dart';
 
 /// 偏移量参考点
 enum OffsetReference {
@@ -379,39 +380,92 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
           ),
         ),
       ),
+      actionsPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context, null), child: const Text("取消")),
-        ElevatedButton(
-          onPressed: () {
-            if (!_formKey.currentState!.validate()) return;
-            
-            // 提交前最终业务校验：变长模式下必须有且仅有一个可重复填充的数组通道
-            if (!_isLengthFixed && _localItems.isNotEmpty) {
-              int repeatCount = _localItems.where((i) => i.isRepeatable).length;
-              if (repeatCount != 1) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text("错误：非固定帧长协议下，必须有且仅有一个变量勾选为'多包重复'以自适应动态长。")),
-                );
-                return;
-              }
-            }
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            // 左下角：永久保存解读协议
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.teal.shade700, foregroundColor: Colors.white),
+              icon: const Icon(Icons.save),
+              label: const Text("永久保存协议"),
+              onPressed: () async {
+                // 执行原表单校验
+                if (!_formKey.currentState!.validate()) return;
+                
+                // 执行原变长协议核心业务校验
+                if (!_isLengthFixed && _localItems.isNotEmpty) {
+                  int repeatCount = _localItems.where((i) => i.isRepeatable).length;
+                  if (repeatCount != 1) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("错误：非固定帧长协议下，必须有且仅有一个变量勾选为'多包重复'。")),
+                    );
+                    return;
+                  }
+                }
 
-            Navigator.pop(
-              context,
-              CustomRxProtocol(
-                header: _parseHex(_headerStr),
-                tail: _parseHex(_tailStr),
-                isLengthFixed: _isLengthFixed,
-                fixedLength: int.tryParse(_lengthController.text),
-                items: _localItems,
-                checksumType: _checksumType,
-                checksumOffset: int.tryParse(_checksumOffsetController.text) ?? 0,
-                checksumRef: _checksumRef,
-              ),
-            );
-          },
-          child: const Text("保存应用"),
-        )
+                // 弹出输入框获取名字
+                final name = await showNameInputDialog(context, "保存解读协议(RX)");
+                if (name != null && name.isNotEmpty) {
+                  final protocolToSave = CustomRxProtocol(
+                    header: _parseHex(_headerStr),
+                    tail: _parseHex(_tailStr),
+                    isLengthFixed: _isLengthFixed,
+                    fixedLength: int.tryParse(_lengthController.text),
+                    items: _localItems,
+                    checksumType: _checksumType,
+                    checksumOffset: int.tryParse(_checksumOffsetController.text) ?? 0,
+                    checksumRef: _checksumRef,
+                  );
+                  await ProtocolStorage.saveRxProtocol(name, protocolToSave);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("解读协议 '$name' 已长久保存")));
+                  }
+                }
+              },
+            ),
+            
+            // 右下角：原有取消与完成
+            Row(
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, null),
+                  child: const Text("取消"),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    if (!_formKey.currentState!.validate()) return;
+                    if (!_isLengthFixed && _localItems.isNotEmpty) {
+                      int repeatCount = _localItems.where((i) => i.isRepeatable).length;
+                      if (repeatCount != 1) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text("错误：非固定帧长协议下，必须有且仅有一个变量勾选为'多包重复'。")),
+                        );
+                        return;
+                      }
+                    }
+
+                    Navigator.pop(
+                      context,
+                      CustomRxProtocol(
+                        header: _parseHex(_headerStr),
+                        tail: _parseHex(_tailStr),
+                        isLengthFixed: _isLengthFixed,
+                        fixedLength: int.tryParse(_lengthController.text),
+                        items: _localItems,
+                        checksumType: _checksumType,
+                        checksumOffset: int.tryParse(_checksumOffsetController.text) ?? 0,
+                        checksumRef: _checksumRef,
+                      ),
+                    );
+                  },
+                  child: const Text("完成"),
+                ),
+              ],
+            ),
+          ],
+        ),
       ],
     );
   }

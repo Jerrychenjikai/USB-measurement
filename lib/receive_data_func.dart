@@ -77,7 +77,7 @@ class SerialPageState {
   final SerialStatus status;
   final MySerialDevice device;
   final ProtocolConfig config;
-  final List<List<double>> currentDisplayData; 
+  final List<List<List<double>>> currentDisplayData; 
   final String? errorMessage;
   final CustomRxProtocol? rxProtocol; 
   final bool hasSentCommand;
@@ -96,7 +96,7 @@ class SerialPageState {
     MySerialDevice? device,
     SerialStatus? status,
     ProtocolConfig? config,
-    List<List<double>>? currentDisplayData,
+    List<List<List<double>>>? currentDisplayData,
     String? errorMessage,
     CustomRxProtocol? rxProtocol, // 新增
     bool? hasSentCommand,
@@ -287,12 +287,12 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
     if (state.rxProtocol == null) return;
 
     // 高性能解析
-    List<List<double>> parsedFrames = RxPacketParser.parseStream(_buffer, state.rxProtocol!);
+    List<List<List<double>>> parsedFrames = RxPacketParser.parseStream(_buffer, state.rxProtocol!);
 
     if (parsedFrames.isEmpty) return;
 
     // 【修复占位符】将新解析出的帧追加到历史记录中
-    List<List<double>> updatedHistory = List.from(state.currentDisplayData);
+    List<List<List<double>>> updatedHistory = List.from(state.currentDisplayData);
     updatedHistory.addAll(parsedFrames);
 
     // 内存保护：限制最大显示帧数（例如最大缓存100万点，按需调整）
