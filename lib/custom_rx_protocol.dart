@@ -141,6 +141,7 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
                 // 1. 帧头配置 (第一步，作为级联开关)
                 TextFormField(
                   initialValue: _headerStr,
+                  enabled: gIsProVersion,
                   decoration: const InputDecoration(
                     labelText: "1. 帧头 (十六进制，空格隔开，如: AA BB。不填视为 null)",
                     hintText: "留空表示无帧头（数据流无对齐标志）",
@@ -175,9 +176,9 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
                               const DropdownMenuItem(value: true, child: Text("固定长度")),
                               const DropdownMenuItem(value: false, child: Text("动态/变长帧")),
                             ],
-                        onChanged: (val) {
+                        onChanged: gIsProVersion ? (val) {
                           if (val != null) setState(() => _isLengthFixed = val);
-                        },
+                        } : null,
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -252,8 +253,12 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
                   children: [
                     Text("4. 变量/数据通道解析表", style: Theme.of(context).textTheme.titleSmall),
                     IconButton(
-                      icon: const Icon(Icons.add_circle, color: Colors.blue),
+                      icon: Icon(Icons.add_circle, color: gIsProVersion ? Colors.blue : Colors.grey),
                       onPressed: () {
+                        if (!gIsProVersion) {
+                          showActivationDialog(context); // 提示激活
+                          return;
+                        }
                         setState(() {
                           _localItems.add(RxProtocolItem(
                             name: "CH${_localItems.length + 1}",
@@ -261,7 +266,7 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
                           ));
                         });
                       },
-                    )
+                    ),
                   ],
                 ),
 
@@ -283,6 +288,7 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
                                   flex: 2,
                                   child: TextFormField(
                                     initialValue: item.name,
+                                    enabled: gIsProVersion,
                                     decoration: const InputDecoration(labelText: "变量名"),
                                     onChanged: (v) => item.name = v,
                                   ),
@@ -294,7 +300,7 @@ class _RxProtocolDialogState extends State<RxProtocolDialog> {
                                     initialValue: item.type,
                                     decoration: const InputDecoration(labelText: "类型"),
                                     items: UsbDataType.values.map((t) => DropdownMenuItem(value: t, child: Text(t.label))).toList(),
-                                    onChanged: (v) => setState(() => item.type = v!),
+                                    onChanged: gIsProVersion ? (v) => setState(() => item.type = v!) : null,
                                   ),
                                 ),
                                 if (item.type.byteSize > 1)

@@ -142,17 +142,17 @@ class SerialPageNotifier extends FamilyNotifier<SerialPageState, MySerialDevice>
         txProtocol: CustomTxProtocol.createDefault(),
       ),
       rxProtocol: CustomRxProtocol(
-        header: null,
+        header: Uint8List.fromList([0xAA, 0xBB]), // 常见帧头 AA BB
         tail: null,
         isLengthFixed: true,
-        fixedLength: 12,
-        checksumType: ChecksumType.none,
-        checksumOffset: 0,
-        checksumRef: OffsetReference.fromHeader,
+        fixedLength: 7, // 帧头2 + ch1(2) + ch2(2) + 校验(1) = 7字节
+        checksumType: ChecksumType.sum8, // 常见求和校验
+        checksumOffset: -1, // 倒数第一位是校验位
+        checksumRef: OffsetReference.fromTail,
         items: [
-          RxProtocolItem(name: "ch1", type: UsbDataType.float32, offset: 0),
-          RxProtocolItem(name: "ch2", type: UsbDataType.float32, offset: 4),
-          RxProtocolItem(name: "ch3", type: UsbDataType.float32, offset: 8),
+          // 常见的 16位有符号整数通道
+          RxProtocolItem(name: "电压(mV)", type: UsbDataType.int16, offset: 2),
+          RxProtocolItem(name: "电流(mA)", type: UsbDataType.int16, offset: 4),
         ],
       ),
       currentDisplayData: [[], [], []], // 对应 3 个通道的历史数据初始化

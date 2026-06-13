@@ -3,9 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:usb_measurement/scan_function.dart';
 import 'package:usb_measurement/receive_data.dart';
+import 'package:usb_measurement/basic_func.dart';
 
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initProStatus();
   runApp(const MyApp());
 }
 

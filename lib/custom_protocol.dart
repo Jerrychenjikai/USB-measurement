@@ -154,9 +154,9 @@ class _ProtocolConfigDialogState extends State<ProtocolConfigDialog> {
                               items: TxItemType.values.map((type) {
                                 return DropdownMenuItem(value: type, child: Text(type.label, style: const TextStyle(fontSize: 13)));
                               }).toList(),
-                              onChanged: (val) {
+                              onChanged: gIsProVersion ? (val) {
                                 if (val != null) setState(() => item.type = val);
-                              },
+                              } : null,
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -182,6 +182,7 @@ class _ProtocolConfigDialogState extends State<ProtocolConfigDialog> {
                             child: item.type == TxItemType.fixedBytes
                                 ? TextFormField(
                                     initialValue: item.fixedValue.toRadixString(16).toUpperCase(),
+                                    enabled: gIsProVersion,
                                     decoration: const InputDecoration(hintText: "HEX", contentPadding: EdgeInsets.zero),
                                     style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
                                     onChanged: (val) {
@@ -215,10 +216,10 @@ class _ProtocolConfigDialogState extends State<ProtocolConfigDialog> {
 
                           // 5. 删除行按钮
                           IconButton(
-                            icon: const Icon(Icons.delete, color: Colors.redAccent, size: 20),
-                            onPressed: () {
+                            icon: Icon(Icons.delete, color: gIsProVersion ? Colors.redAccent : Colors.grey, size: 20),
+                            onPressed: gIsProVersion ? () {
                               setState(() => _localItems.removeAt(index));
-                            },
+                            } : null,
                           ),
                         ],
                       ),
@@ -241,6 +242,10 @@ class _ProtocolConfigDialogState extends State<ProtocolConfigDialog> {
                   icon: const Icon(Icons.add),
                   label: const Text("添加字段"),
                   onPressed: () {
+                    if (!gIsProVersion) {
+                      showActivationDialog(context); // 未激活时引导去激活
+                      return;
+                    }
                     setState(() {
                       _localItems.add(TxProtocolItem(type: TxItemType.fixedBytes, length: 1));
                     });
