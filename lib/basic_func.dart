@@ -113,7 +113,13 @@ bool verifyActivationCode(String token) {
   // TODO: 替换为你自己生成的公钥
   const String publicKeyPEM = '''
 -----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnpO/0hfKtWz0wVM1Xhcd
+a0ykCR+CHFNiBZnTwlQL6dMVCSUe4eBkUdHfkyDy+MNZe9X3Q5VIMs/JNK4MdDQZ
+kqHoJg00QumaCm/2s4Mv6Lxj73FbOlWuekDOzkMUbcnwZIy6koLUXwR2KsyS5c3f
+AoD1jEfBHd7mRThmaGqorvmHFsXP3aj9LfhERko5+dHZPmsyUvSTK626qsK54vXk
+oryErfIcD35st2oxY5cuPpd/JyPLLPSEW5cUkgqfTlnGPvz4GiyCTzqX6zaO33vc
+3WakTcn06spBawvmrG9+oHlQ/6lB/lk+NgzboXfjwig2I/y7g8xQavYKgI3vcxjn
+sQIDAQAB
 -----END PUBLIC KEY-----
 ''';
 
