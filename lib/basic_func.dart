@@ -110,7 +110,6 @@ Future<void> showActivationDialog(BuildContext context) async {
 bool verifyActivationCode(String token) {
   if (token.isEmpty) return false;
 
-  // TODO: 替换为你自己生成的公钥
   const String publicKeyPEM = '''
 -----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnpO/0hfKtWz0wVM1Xhcd
